@@ -18,6 +18,8 @@ from .notify import hub
 log = logging.getLogger("radar.engine")
 
 INDEX_TICKERS = {"SPY": "S&P 500", "QQQ": "נאסד\"ק 100", "^VIX": "VIX פחד", "^TA125.TA": "ת\"א 125"}
+BRIEF_RESERVE = 3  # AI requests kept for the market brief in every scan
+
 ACTION_HE = {"BUY": "קנייה", "ADD": "הגדלה", "HOLD": "החזקה", "WATCH": "מעקב", "TRIM": "מימוש חלקי", "SELL": "מכירה"}
 
 state = {
@@ -243,7 +245,10 @@ def _scan(force_llm: bool) -> dict:
                "signals": r["signals"], "score": r["score"], "holding": r["holding"], "pnl_pct": r.get("pnl_pct"),
                "news": r["news"], "social": r["social"], "fundamentals": funds.get(t), "congress": congress.get(t),
                "sizing": None if r["holding"] else r["sizing"]}
-        if settings.llm_enabled() and due and llm_calls < settings.LLM_MAX_CALLS_PER_SCAN:
+        # keep a few requests for the market brief: one analysis can take up to 3 requests when a
+        # provider is busy and the next one is tried
+        brief_reserve_ok = llm.budget is None or llm.budget > BRIEF_RESERVE
+        if settings.llm_enabled() and due and llm_calls < settings.LLM_MAX_CALLS_PER_SCAN and brief_reserve_ok:
             r["analysis"] = llm.analyze_stock(ctx)
             r["analysis_ts"] = time.time()
             rb = llm.rule_based_stock(ctx)  # hard exit rules (stop/target/trailing) always win
@@ -301,7 +306,10 @@ def _scan(force_llm: bool) -> dict:
     n_alerts = generate_alerts(rows, prev_snaps, new_news, congress, names)
 
     # market brief
-    if time.time() - state["last_brief"] >= settings.BRIEF_INTERVAL_MIN * 60 or force_llm:
+    prev_brief = db.get_summary("market_brief")
+    brief_is_rules = not prev_brief or prev_brief[1].get("provider", "rules") == "rules"
+    if (time.time() - state["last_brief"] >= settings.BRIEF_INTERVAL_MIN * 60 or force_llm
+            or (brief_is_rules and settings.llm_enabled() and llm.has_budget())):  # retry until the brief is AI-written
         build_brief(idx, pm_final)
         state["last_brief"] = time.time()
 

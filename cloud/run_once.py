@@ -194,7 +194,7 @@ def setup_llm(user: dict, own: dict, usage: dict, n_shared: int) -> dict:
         settings.GROQ_API_KEY = own.get("groq", "")
         settings.OPENROUTER_API_KEY = own.get("openrouter", "")
         settings.LLM_MAX_CALLS_PER_SCAN = PER_SCAN
-        llm.reset(None)
+        llm.reset(PER_SCAN * 3 + 4)  # own key: generous, but still bounded per scan
         return {"mode": "own", "providers": sorted(own)}
     settings.GEMINI_API_KEY = SHARED_KEYS["GEMINI_API_KEY"]
     settings.GROQ_API_KEY = SHARED_KEYS["GROQ_API_KEY"]
@@ -204,8 +204,9 @@ def setup_llm(user: dict, own: dict, usage: dict, n_shared: int) -> dict:
         return {"mode": "none"}
     share = max(1, SHARED_DAILY // max(1, n_shared))
     used = usage["users"].get(uid, 0)
-    allowance = max(0, min(PER_SCAN + 1, share - used, SHARED_DAILY - usage["total"]))
-    settings.LLM_MAX_CALLS_PER_SCAN = max(0, allowance - 1)  # one request kept for the market brief
+    # analyses per scan + room for provider fallbacks and the market brief
+    allowance = max(0, min(PER_SCAN + 4, share - used, SHARED_DAILY - usage["total"]))
+    settings.LLM_MAX_CALLS_PER_SCAN = PER_SCAN
     llm.reset(allowance)
     return {"mode": "shared", "daily_share": share, "used_today": used}
 
