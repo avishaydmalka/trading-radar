@@ -166,8 +166,48 @@ def share_fetches(all_tickers: list[str]) -> None:
     prices.get_fundamentals = memo(prices.get_fundamentals)
 
 
+# ------------------------------------------------------------------ AI keys & free-tier budget
+SHARED_KEYS = {k: os.environ.get(k, "").strip() for k in ("GEMINI_API_KEY", "GROQ_API_KEY", "OPENROUTER_API_KEY")}
+# Requests per day the shared (admin's) keys may make, split between everyone without their own key.
+# Kept far below the free tiers (Gemini Flash ~1,500/day, Groq ~1,000/day) so the shared key stays free.
+SHARED_DAILY = int(os.environ.get("SHARED_LLM_DAILY_CALLS", "300") or 300)
+PER_SCAN = int(os.environ.get("LLM_MAX_CALLS_PER_SCAN", "6") or 6)
+
+
+def own_keys(kv: KV, uid: str) -> dict:
+    keys = kv.get_json(f"llm_keys:{uid}") or {}
+    return {k: v.strip() for k, v in keys.items() if isinstance(v, str) and v.strip()}
+
+
+def setup_llm(user: dict, own: dict, usage: dict, n_shared: int) -> dict:
+    """Point the LLM layer at the user's own keys, or at the shared keys with a fair daily budget."""
+    from app.analysis import llm
+    from app.config import settings
+
+    uid = user["id"]
+    if own:
+        settings.GEMINI_API_KEY = own.get("gemini", "")
+        settings.GROQ_API_KEY = own.get("groq", "")
+        settings.OPENROUTER_API_KEY = own.get("openrouter", "")
+        settings.LLM_MAX_CALLS_PER_SCAN = PER_SCAN
+        llm.reset(None)
+        return {"mode": "own", "providers": sorted(own)}
+    settings.GEMINI_API_KEY = SHARED_KEYS["GEMINI_API_KEY"]
+    settings.GROQ_API_KEY = SHARED_KEYS["GROQ_API_KEY"]
+    settings.OPENROUTER_API_KEY = SHARED_KEYS["OPENROUTER_API_KEY"]
+    if not any(SHARED_KEYS.values()):
+        llm.reset(0)
+        return {"mode": "none"}
+    share = max(1, SHARED_DAILY // max(1, n_shared))
+    used = usage["users"].get(uid, 0)
+    allowance = max(0, min(PER_SCAN + 1, share - used, SHARED_DAILY - usage["total"]))
+    settings.LLM_MAX_CALLS_PER_SCAN = max(0, allowance - 1)  # one request kept for the market brief
+    llm.reset(allowance)
+    return {"mode": "shared", "daily_share": share, "used_today": used}
+
+
 # ------------------------------------------------------------------ main
-def scan_user(kv: KV, user: dict, force: bool, vapid: dict, public_url: str) -> dict:
+def scan_user(kv: KV, user: dict, force: bool, vapid: dict, public_url: str, llm_info: dict) -> dict:
     from app import db, engine
     from app.config import settings
     from app.main import dashboard_payload
@@ -206,7 +246,10 @@ def scan_user(kv: KV, user: dict, force: bool, vapid: dict, public_url: str) -> 
     db.kv_set("engine_state", json.dumps({k: engine.state[k] for k in ("last_news", "last_brief", "scans")}))
 
     dash = dashboard_payload()
-    dash.update({"mode": "cloud", "generated": time.time(), "user": {"id": uid, "name": user.get("name")}})
+    from app.analysis import llm
+    if llm_info["mode"] == "shared":
+        llm_info = {**llm_info, "used_today": llm_info["used_today"] + llm.calls}
+    dash.update({"mode": "cloud", "generated": time.time(), "user": {"id": uid, "name": user.get("name")}, "llm": llm_info})
     dash["status"]["next_scan"] = None
     dash["features"]["webpush"] = True
     kv.put_json(f"dashboard:{uid}", dash)
@@ -226,7 +269,7 @@ def scan_user(kv: KV, user: dict, force: bool, vapid: dict, public_url: str) -> 
         db.execute("VACUUM")
     db.checkpoint()
     kv.put(f"db:{uid}", Path(path).read_bytes())
-    return {**result, "tickers_list": sorted(stocks)}
+    return {**result, "tickers_list": sorted(stocks), "llm_requests": llm.calls}
 
 
 def main() -> int:
@@ -248,12 +291,23 @@ def main() -> int:
     force = os.environ.get("FORCE_LLM") == "1"
     only = os.environ.get("ONLY_USER", "").strip()
 
+    today = time.strftime("%Y-%m-%d", time.gmtime())
+    usage = kv.get_json("llm_usage") or {}
+    if usage.get("date") != today:
+        usage = {"date": today, "total": 0, "users": {}}
+    owns = {u["id"]: own_keys(kv, u["id"]) for u in users}
+    n_shared = sum(1 for u in users if not owns[u["id"]])
+
     failures, scanned = 0, set()
     for u in users:
         if only and u["id"] != only:
             continue
         try:
-            r = scan_user(kv, u, force, vapid, public_url)
+            info = setup_llm(u, owns[u["id"]], usage, n_shared)
+            r = scan_user(kv, u, force, vapid, public_url, info)
+            if info["mode"] == "shared":
+                usage["total"] += r.get("llm_requests", 0)
+                usage["users"][u["id"]] = usage["users"].get(u["id"], 0) + r.get("llm_requests", 0)
             scanned.update(r.get("tickers_list", []))
             log.info("user %s: %s", u["id"], {k: v for k, v in r.items() if k in ("status", "tickers", "alerts", "llm_calls")})
             if r.get("status") == "error":
@@ -277,7 +331,8 @@ def main() -> int:
         kv.put("backtests", bundle(bts))
         kv.put_json("backtests_meta", {"ts": time.time(), "tickers": tickers})
 
-    log.info("done: %d users in %.1fs", len(users), time.time() - t0)
+    kv.put_json("llm_usage", usage)
+    log.info("done: %d users in %.1fs, shared AI requests today %d/%d", len(users), time.time() - t0, usage["total"], SHARED_DAILY)
     return 1 if failures and failures == len([u for u in users if not only or u["id"] == only]) else 0
 
 

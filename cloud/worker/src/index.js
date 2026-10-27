@@ -197,6 +197,32 @@ async function api(request, env, ctx, url, path, user) {
     return json(publicUser(user));
   }
 
+  // ---- personal AI keys (stored server-side only; the browser only ever sees the last 4 characters)
+  if (path === "/api/me/llm") {
+    const key = `llm_keys:${uid}`;
+    const keys = await kvJSON(env, key, {});
+    if (m === "PUT") {
+      const results = {};
+      for (const p of ["gemini", "groq", "openrouter"]) {
+        if (body[p] === undefined) continue;
+        const v = clean(body[p]);
+        if (!v) { delete keys[p]; results[p] = "removed"; continue; }
+        const check = await validateKey(p, v);
+        if (!check.ok) return json({ error: `מפתח ${p} לא עבד: ${check.error}` }, 400);
+        keys[p] = v;
+        results[p] = "ok";
+      }
+      await putJSON(env, key, keys);
+      return json({ ok: true, results, keys: maskKeys(keys) });
+    }
+    const usage = await kvJSON(env, "llm_usage", {});
+    return json({ keys: maskKeys(keys), shared_used_today: usage.users?.[uid] || 0 });
+  }
+  if (path === "/api/llm/usage") {
+    if (!user.is_admin) return json({ error: "admin only" }, 403);
+    return json(await kvJSON(env, "llm_usage", {}));
+  }
+
   // ---- user management (admin)
   if (path.startsWith("/api/users")) {
     if (!user.is_admin) return json({ error: "רק המנהל יכול לנהל משתמשים" }, 403);
@@ -234,7 +260,7 @@ async function api(request, env, ctx, url, path, user) {
     if (m === "DELETE") {
       if (target.is_admin) return json({ error: "אי אפשר למחוק את המנהל" }, 400);
       await putJSON(env, "users", users.filter((u) => u.id !== id));
-      await Promise.all(["config", "dashboard", "stocks", "db", "push_subs", "alerts_read_ts"].map((k) => env.RADAR.delete(`${k}:${id}`)));
+      await Promise.all(["config", "dashboard", "stocks", "db", "push_subs", "alerts_read_ts", "llm_keys"].map((k) => env.RADAR.delete(`${k}:${id}`)));
       return json({ ok: true });
     }
   }
@@ -351,6 +377,23 @@ async function api(request, env, ctx, url, path, user) {
 
   if (path === "/api/stream") return json({ error: "live stream not available in cloud mode" }, 404);
   return json({ error: "not found" }, 404);
+}
+
+const maskKeys = (keys) => Object.fromEntries(Object.entries(keys).map(([k, v]) => [k, v ? `••••${String(v).slice(-4)}` : null]));
+
+/** one cheap, free request that proves the key works (lists models / key info) */
+async function validateKey(provider, key) {
+  try {
+    let r;
+    if (provider === "gemini") r = await fetch(`https://generativelanguage.googleapis.com/v1beta/models?pageSize=1&key=${encodeURIComponent(key)}`);
+    else if (provider === "groq") r = await fetch("https://api.groq.com/openai/v1/models", { headers: { Authorization: `Bearer ${key}` } });
+    else if (provider === "openrouter") r = await fetch("https://openrouter.ai/api/v1/key", { headers: { Authorization: `Bearer ${key}` } });
+    else return { ok: false, error: "ספק לא מוכר" };
+    if (r.ok) return { ok: true };
+    return { ok: false, error: r.status === 400 || r.status === 401 || r.status === 403 ? "המפתח לא תקין" : `HTTP ${r.status}` };
+  } catch (e) {
+    return { ok: false, error: "אין חיבור לספק" };
+  }
 }
 
 function cleanHolding(h) {

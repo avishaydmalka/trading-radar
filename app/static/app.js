@@ -425,6 +425,14 @@ function renderCongress() {
   }).join("") : `<div class="empty">לא נמצאו דיווחים אחרונים</div>`;
 }
 
+function aiStatusText(info) {
+  if (!info) return "";
+  if (info.mode === "own") return `✅ הניתוח שלך רץ על המפתח שלך (${(info.providers || []).join(", ")})`;
+  if (info.mode === "none") return "⚙️ אין מפתח AI במערכת – ניתוח מבוסס חוקים";
+  const left = Math.max(0, (info.daily_share || 0) - (info.used_today || 0));
+  return `🔄 משתמש במפתח המשותף · נוצלו היום ${info.used_today || 0} מתוך ${info.daily_share || 0} ניתוחים` + (left ? "" : " – עד מחר ניתוח מבוסס חוקים");
+}
+
 /* ------------------------------------------------------------------ login (multi-user cloud mode) */
 const AVATAR = ["#3987e5", "#d95926", "#199e70", "#c98500", "#d55181", "#9085e9", "#e66767", "#008300"];
 const avatar = (u, size = 34) => `<span class="avatar" style="--av:${AVATAR[(u.color ?? 0) % 8]};width:${size}px;height:${size}px;font-size:${Math.round(size * 0.45)}px">${esc((u.name || "?").trim().charAt(0))}</span>`;
@@ -781,6 +789,19 @@ function settingsModal(tab = "risk") {
         <span class="hint">${f.telegram_bot ? "שלח /start לבוט של המערכת בטלגרם והדבק כאן את המספר שהוא מחזיר" : "הבוט עוד לא הוגדר – בקש מהמנהל"}</span></label>
       <div class="full"><button class="btn primary">שמור</button></div>
     </form>
+    <form class="form" id="llmForm">
+      <div class="full"><b>🤖 מפתחות AI אישיים</b>
+        <div class="hint" id="llmStatus">${aiStatusText(d.llm)}</div>
+        <div class="hint">עם מפתח משלך הניתוח רץ על המכסה החינמית שלך, בלי הגבלה יומית מהמערכת. בלי מפתח – משתמשים במפתח המשותף עד המכסה היומית שלך, ואחריה בניתוח מבוסס חוקים.</div></div>
+      <label>Gemini <a class="hint" href="https://aistudio.google.com/apikey" target="_blank" rel="noopener">קבל מפתח חינמי ↗</a>
+        <input type="password" name="gemini" autocomplete="off" dir="ltr" placeholder="טוען…"></label>
+      <label>Groq <a class="hint" href="https://console.groq.com/keys" target="_blank" rel="noopener">קבל מפתח חינמי ↗</a>
+        <input type="password" name="groq" autocomplete="off" dir="ltr" placeholder="טוען…"></label>
+      <label class="full">OpenRouter (רשות) <a class="hint" href="https://openrouter.ai/keys" target="_blank" rel="noopener">קבל מפתח ↗</a>
+        <input type="password" name="openrouter" autocomplete="off" dir="ltr" placeholder="טוען…"></label>
+      <div class="full hint">כדי שהמפתח יישאר חינמי: אל תפעיל חיוב (Billing) בחשבון שבו יצרת אותו. בלי חיוב, הספק פשוט עוצר כשמגיעים למכסה ולא גובה כסף.</div>
+      <div class="full row gap" style="justify-content:space-between"><button type="button" class="btn small" id="llmClear">הסר את המפתחות שלי</button><button class="btn primary">שמור ובדוק</button></div>
+    </form>
     <form class="form" id="pwForm">
       <div class="full"><b>שינוי סיסמה</b></div>
       <label>סיסמה נוכחית<input type="password" name="current_password" autocomplete="current-password" required></label>
@@ -829,6 +850,8 @@ function settingsModal(tab = "risk") {
       ${row("📤 ברוקר Alpaca (Paper)", f.broker, "אופציונלי – פקודות רק באישור ידני")}
       <div class="feat"><span>⏱️ תדירות סריקה</span><span class="num">${state.cloud ? "20" : d.status?.interval_min ?? "—"} ד׳</span></div>
       <div class="feat"><span>🔢 סריקות</span><span class="num">${d.status?.scans ?? 0}</span></div>
+      ${d.llm ? `<div class="feat"><span>🤖 AI בחשבון שלך<div class="hint muted small">${aiStatusText(d.llm)}</div></span><span></span></div>` : ""}
+      ${me?.is_admin ? `<div class="feat" id="sharedUsage"><span>🔑 מפתח משותף – שימוש היום</span><span class="num">…</span></div>` : ""}
       <button class="btn" id="sLLM" style="margin-top:8px">🤖 סריקה + ניתוח AI מלא עכשיו</button></div>`;
   }
   modal("הגדרות", `<div class="tabs">${Object.entries(tabs).map(([k, v]) => `<button data-tab="${k}" class="${k === tab ? "on" : ""}">${v}</button>`).join("")}</div>${body}`);
@@ -865,6 +888,26 @@ function settingsModal(tab = "risk") {
       e.target.reset(); toast({ level: "opportunity", title: "הסיסמה עודכנה" });
     };
     $("#logoutBtn").onclick = logout;
+    const fillKeys = (keys) => ["gemini", "groq", "openrouter"].forEach((p) => {
+      const inp = $(`#llmForm [name=${p}]`); inp.value = ""; inp.placeholder = keys[p] ? `שמור: ${keys[p]}` : "לא הוגדר";
+    });
+    api("/api/me/llm").then((r) => { if (!r.error) fillKeys(r.keys || {}); });
+    $("#llmForm").onsubmit = async (e) => {
+      e.preventDefault();
+      const body = {};
+      for (const [k, v] of new FormData(e.target)) if (v.trim()) body[k] = v.trim();
+      if (!Object.keys(body).length) return toast({ level: "info", title: "לא הוכנס מפתח חדש" });
+      const btn = $("#llmForm .btn.primary"); btn.disabled = true; btn.textContent = "בודק…";
+      const r = await api("/api/me/llm", { method: "PUT", body });
+      btn.disabled = false; btn.textContent = "שמור ובדוק";
+      if (r.error) return toast({ level: "warning", title: "המפתח לא נשמר", body: r.error });
+      fillKeys(r.keys);
+      toast({ level: "opportunity", title: "המפתח נבדק ונשמר ✔", body: "מהסריקה הבאה הניתוח שלך ירוץ על המפתח שלך" });
+    };
+    $("#llmClear").onclick = async () => {
+      const r = await api("/api/me/llm", { method: "PUT", body: { gemini: "", groq: "", openrouter: "" } });
+      if (!r.error) { fillKeys(r.keys); toast({ level: "info", title: "המפתחות הוסרו", body: "חוזרים למפתח המשותף" }); }
+    };
   }
   if (tab === "users") {
     const drawUsers = async () => {
@@ -903,6 +946,9 @@ function settingsModal(tab = "risk") {
       e.target.reset(); drawUsers();
     };
   }
+  if (tab === "system" && me?.is_admin) api("/api/llm/usage").then((u) => {
+    const el = $("#sharedUsage .num"); if (el && !u.error) el.textContent = `${u.total || 0} בקשות`;
+  });
   if (tab === "system") $("#sLLM").onclick = async () => { await api("/api/scan?llm=1", { method: "POST" }); closeModal(); toast({ level: "info", title: "סריקה מלאה התחילה", body: "התוצאות יתעדכנו אוטומטית" }); };
 }
 

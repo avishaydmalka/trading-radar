@@ -397,7 +397,14 @@ def build_brief(idx: dict, pm: dict) -> dict:
     ctx = {"indices": idx, "portfolio": pm, "holdings": holdings,
            "opportunities": [{"ticker": s["ticker"], "score": s["score"], "top_signal": s.get("top_signal")} for s in opps],
            "news": mnews, "news_sentiment": aggregate(mnews)}
-    brief = llm.market_brief(ctx) if settings.llm_enabled() else llm.rule_based_brief(ctx)
+    if settings.llm_enabled() and llm.has_budget():
+        brief = llm.market_brief(ctx)
+    else:
+        prev = db.get_summary("market_brief")
+        # out of AI budget: keep a recent AI brief instead of downgrading it
+        if prev and prev[1].get("provider", "rules") != "rules" and time.time() - prev[0] < 12 * 3600:
+            return prev[1]
+        brief = llm.rule_based_brief(ctx)
     brief["ts"] = time.time()
     db.save_summary("market_brief", brief)
     hub.broadcast("brief", brief)

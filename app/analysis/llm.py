@@ -20,6 +20,22 @@ log = logging.getLogger("radar.llm")
 _lock = threading.Lock()
 _cooldown: dict[str, float] = {}   # provider -> unix time until which it is skipped
 _last_call: dict[str, float] = {}
+
+# Request budget for this process (None = unlimited). The cloud runner sets it per user so a
+# shared free-tier key is split fairly and never pushed past its free quota.
+budget: int | None = None
+calls = 0  # requests sent since the last reset()
+
+
+def reset(new_budget: int | None = None) -> None:
+    """Called when the runner switches to another user's keys."""
+    global budget, calls
+    budget, calls = new_budget, 0
+    _cooldown.clear()
+
+
+def has_budget() -> bool:
+    return budget is None or budget > 0
 MIN_GAP_SEC = {"gemini": 5.0, "groq": 2.5, "openrouter": 4.0, "ollama": 0.0}
 
 SYSTEM_PROMPT = (
@@ -118,7 +134,10 @@ def _available() -> list[str]:
 
 def complete_json(prompt: str) -> tuple[dict | None, str]:
     """Try providers in order. Returns (parsed_json | None, provider_name)."""
+    global budget, calls
     for name in _available():
+        if budget is not None and budget <= 0:
+            break
         if _cooldown.get(name, 0) > time.time():
             continue
         with _lock:
@@ -126,6 +145,9 @@ def complete_json(prompt: str) -> tuple[dict | None, str]:
             if gap > 0:
                 time.sleep(gap)
             _last_call[name] = time.time()
+            calls += 1  # every request counts toward the provider's quota, even a failed one
+            if budget is not None:
+                budget -= 1
         try:
             if name == "gemini":
                 text = _call_gemini(prompt)
