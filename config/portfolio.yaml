@@ -1,0 +1,48 @@
+# ------------------------------------------------------------------
+#  התיק ההתחלתי – נטען פעם אחת בהפעלה הראשונה.
+#  אחרי זה עורכים הכל מתוך הדשבורד (⚙️ הגדרות → תיק / מעקב).
+#  מניות תל אביב: סיומת .TA ומחיר בשקלים (לא באגורות). דוגמה: TEVA.TA
+# ------------------------------------------------------------------
+
+risk:
+  cash: 15000              # מזומן פנוי במטבע הבסיס (BASE_CURRENCY)
+  risk_per_trade_pct: 1.0  # כמה % מהתיק מותר להפסיד בעסקה אחת אם הסטופ נפגע
+  max_position_pct: 15     # משקל מקסימלי למניה בודדת
+  max_basket_pct: 40       # משקל מקסימלי לסל
+  default_stop_pct: 8      # סטופ ברירת מחדל למניה בלי סטופ
+  atr_stop_mult: 2.0       # סטופ מוצע = כניסה - 2×ATR
+  reward_risk: 2.0         # יעד מוצע = יחס סיכוי:סיכון 1:2
+
+holdings:
+  - {ticker: NVDA, basket: "AI ושבבים", shares: 40, avg_price: 128, stop_loss: 150, take_profit: 210, trailing_pct: 12}
+  - {ticker: MSFT, basket: "AI ושבבים", shares: 12, avg_price: 410, stop_loss: 430}
+  - {ticker: AMD,  basket: "AI ושבבים", shares: 30, avg_price: 150, stop_loss: 138, take_profit: 200}
+  - {ticker: TSLA, basket: "צמיחה",     shares: 15, avg_price: 260, stop_loss: 290, take_profit: 315}
+  - {ticker: PLTR, basket: "צמיחה",     shares: 60, avg_price: 70,  trailing_pct: 15}
+  - {ticker: JPM,  basket: "ערך ודיבידנד", shares: 20, avg_price: 220, stop_loss: 235}
+  - {ticker: XOM,  basket: "ערך ודיבידנד", shares: 35, avg_price: 118, stop_loss: 106}
+  - {ticker: SMCI, basket: "AI ושבבים", shares: 80, avg_price: 52,  stop_loss: 47}
+  - {ticker: TEVA.TA, basket: "ישראל",  shares: 150, avg_price: 58, stop_loss: 62, take_profit: 90}
+  - {ticker: LUMI.TA, basket: "ישראל",  shares: 300, avg_price: 41, stop_loss: 46}
+
+watchlist:
+  - {ticker: META,    basket: "AI ושבבים"}
+  - {ticker: AVGO,    basket: "AI ושבבים"}
+  - {ticker: COIN,    basket: "צמיחה"}
+  - {ticker: LLY,     basket: "בריאות"}
+  - {ticker: AMZN,    basket: "צמיחה"}
+  - {ticker: ESLT.TA, basket: "ישראל"}
+  - {ticker: NICE.TA, basket: "ישראל"}
+
+feeds:
+  # מקורות חדשות כלליים (RSS). אפשר להוסיף/להחליף.
+  market:
+    CNBC: https://www.cnbc.com/id/100003114/device/rss/rss.html
+    MarketWatch: https://feeds.content.dowjones.io/public/rss/mw_topstories
+    Yahoo Finance: https://finance.yahoo.com/news/rssindex
+    "גלובס – שוק ההון": https://www.globes.co.il/webservice/rss/rssfeeder.asmx/FeederNode?iID=585
+  # "משפיענים": כל פיד RSS – Substack, ערוץ YouTube, או חשבון X דרך rss.app / RSSHub.
+  # הודעות שמזכירות $TICKER משויכות אוטומטית למניה.
+  influencers: {}
+    # "Example Substack": https://example.substack.com/feed
+    # "YouTube channel": https://www.youtube.com/feeds/videos.xml?channel_id=XXXX

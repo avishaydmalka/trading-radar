@@ -1,0 +1,10 @@
+starlette>=0.47
+uvicorn[standard]>=0.30
+sse-starlette>=2.1
+pandas>=2.2
+numpy>=1.26
+requests>=2.31
+yfinance>=0.2.60
+PyYAML>=6.0
+pywebpush>=2.0
+cryptography>=42

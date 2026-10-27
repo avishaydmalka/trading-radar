@@ -1,0 +1,74 @@
+# Publishes the dashboard + API to Cloudflare Workers. Runs on every push and from the Actions tab.
+name: deploy
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      actions: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Check required secrets
+        env:
+          CF_API_TOKEN: ${{ secrets.CF_API_TOKEN }}
+          CF_ACCOUNT_ID: ${{ secrets.CF_ACCOUNT_ID }}
+          KV_NAMESPACE_ID: ${{ secrets.KV_NAMESPACE_ID }}
+          DASHBOARD_PASSWORD: ${{ secrets.DASHBOARD_PASSWORD }}
+        run: |
+          missing=""
+          for k in CF_API_TOKEN CF_ACCOUNT_ID KV_NAMESPACE_ID DASHBOARD_PASSWORD; do
+            [ -z "${!k}" ] && missing="$missing $k"
+          done
+          if [ -n "$missing" ]; then echo "::error::Missing GitHub secrets:$missing"; exit 1; fi
+
+      - name: Prepare
+        env:
+          KV_NAMESPACE_ID: ${{ secrets.KV_NAMESPACE_ID }}
+        run: |
+          rm -rf cloud/worker/public
+          cp -r app/static cloud/worker/public
+          sed -i "s/__KV_NAMESPACE_ID__/${KV_NAMESPACE_ID}/" cloud/worker/wrangler.toml
+
+      - name: Deploy Worker
+        working-directory: cloud/worker
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CF_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CF_ACCOUNT_ID }}
+        run: npx --yes wrangler@4 deploy --var "GITHUB_REPO:${{ github.repository }}"
+
+      - name: Upload Worker secrets
+        working-directory: cloud/worker
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CF_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CF_ACCOUNT_ID }}
+          DASHBOARD_PASSWORD: ${{ secrets.DASHBOARD_PASSWORD }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          GH_DISPATCH_TOKEN: ${{ secrets.GH_DISPATCH_TOKEN }}
+          ALPACA_API_KEY: ${{ secrets.ALPACA_API_KEY }}
+          ALPACA_SECRET_KEY: ${{ secrets.ALPACA_SECRET_KEY }}
+        run: |
+          python3 -c "
+          import json, os
+          keys = ['DASHBOARD_PASSWORD','TELEGRAM_BOT_TOKEN','TELEGRAM_CHAT_ID','GH_DISPATCH_TOKEN','ALPACA_API_KEY','ALPACA_SECRET_KEY']
+          json.dump({k: os.environ[k] for k in keys if os.environ.get(k)}, open('secrets.json', 'w'))
+          "
+          npx --yes wrangler@4 secret bulk secrets.json
+          rm -f secrets.json
+
+      - name: Start the first scan
+        if: github.event_name == 'workflow_dispatch'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh workflow run scan.yml --ref "${{ github.ref_name }}" || true

@@ -1,0 +1,51 @@
+# The scanner: runs the analysis engine on a schedule and saves the results to Cloudflare KV.
+name: scan
+
+on:
+  schedule:
+    # Times are UTC. Weekdays 06:00–20:40 UTC = 08:00–22:40 Israel (TASE + Wall Street).
+    - cron: "*/20 6-20 * * 1-5"
+    - cron: "5 21 * * 1-5"      # after the US close
+    - cron: "0 7 * * 0"         # Sunday morning brief
+  workflow_dispatch:            # the dashboard's "scan" button / Telegram /scan
+    inputs:
+      force_llm:
+        description: "Full AI analysis for every stock (1/0)"
+        required: false
+        default: "0"
+
+concurrency:
+  group: scan
+  cancel-in-progress: false
+
+jobs:
+  scan:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - name: Install
+        run: pip install -q -r requirements.txt
+      - name: Scan
+        run: python -m cloud.run_once
+        env:
+          CF_API_TOKEN: ${{ secrets.CF_API_TOKEN }}
+          CF_ACCOUNT_ID: ${{ secrets.CF_ACCOUNT_ID }}
+          KV_NAMESPACE_ID: ${{ secrets.KV_NAMESPACE_ID }}
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
+          OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+          FINNHUB_API_KEY: ${{ secrets.FINNHUB_API_KEY }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          BASE_CURRENCY: ${{ vars.BASE_CURRENCY || 'USD' }}
+          DEMO_MODE: ${{ vars.DEMO_MODE || '0' }}
+          FORCE_LLM: ${{ inputs.force_llm || '0' }}
+          NEWS_INTERVAL_MIN: "15"
+          LLM_INTERVAL_MIN: "40"
+          LLM_MAX_CALLS_PER_SCAN: "6"
+          BRIEF_INTERVAL_MIN: "60"

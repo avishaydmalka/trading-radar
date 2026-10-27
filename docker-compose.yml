@@ -1,0 +1,27 @@
+services:
+  radar:
+    build: .
+    restart: unless-stopped
+    env_file: .env
+    volumes:
+      - ./data:/app/data          # SQLite: holdings, alerts, history
+      - ./config:/app/config      # portfolio.yaml
+    expose:
+      - "8000"
+
+  caddy:                          # automatic HTTPS (needed for phone push notifications)
+    image: caddy:2
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+    environment:
+      - DOMAIN=${DOMAIN}
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+    depends_on:
+      - radar
+
+volumes:
+  caddy_data:

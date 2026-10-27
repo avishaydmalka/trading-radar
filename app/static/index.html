@@ -1,0 +1,141 @@
+<!doctype html>
+<html lang="he" dir="rtl">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>רדאר מסחר</title>
+<meta name="theme-color" content="#0a0f1c">
+<link rel="manifest" href="/manifest.webmanifest">
+<link rel="icon" href="/static/icon.svg" type="image/svg+xml">
+<link rel="apple-touch-icon" href="/static/icon-192.png">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Heebo:wght@400;500;600;700;800&family=JetBrains+Mono:wght@500;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="/static/styles.css">
+<script src="https://unpkg.com/lightweight-charts@4.2.0/dist/lightweight-charts.standalone.production.js"></script>
+</head>
+<body>
+<div id="demoBanner" class="demo-banner" hidden>מצב הדגמה – הנתונים סינתטיים. כבה את DEMO_MODE כדי לעבור לנתוני אמת.</div>
+
+<header class="topbar">
+  <div class="brand">
+    <svg class="brand-mark" viewBox="0 0 32 32" aria-hidden="true"><circle cx="16" cy="16" r="14" fill="none" stroke="currentColor" stroke-width="2" opacity=".35"/><circle cx="16" cy="16" r="8" fill="none" stroke="currentColor" stroke-width="2" opacity=".6"/><path d="M16 16 L27 9" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"/><circle cx="23" cy="11" r="2.4" fill="var(--bull)"/></svg>
+    <div><div class="brand-name">רדאר מסחר</div><div class="brand-sub" id="scanInfo">טוען…</div></div>
+  </div>
+  <div class="markets" id="markets"></div>
+  <div class="top-actions">
+    <button class="btn ghost" id="btnScan" title="סרוק עכשיו"><span class="spin-ico">⟳</span><span class="lbl"> סרוק</span></button>
+    <button class="btn ghost icon" id="btnBell" title="התראות"><span>🔔</span><span class="badge" id="unread" hidden>0</span></button>
+    <button class="btn ghost icon" id="btnSettings" title="הגדרות">⚙️</button>
+  </div>
+</header>
+
+<main class="wrap">
+  <!-- KPI row -->
+  <section class="kpis" id="kpis"></section>
+
+  <!-- Brief + alerts -->
+  <section class="grid two">
+    <article class="card brief" id="briefCard">
+      <div class="card-h"><h2>🧭 תדריך שוק</h2><span class="muted small" id="briefMeta"></span></div>
+      <div class="brief-body">
+        <div class="gauge-wrap"><svg id="moodGauge" viewBox="0 0 200 120"></svg><div class="gauge-label" id="moodLabel"></div></div>
+        <div class="brief-text" id="briefText"></div>
+      </div>
+      <div class="indices" id="indices"></div>
+    </article>
+    <article class="card alerts-card">
+      <div class="card-h"><h2>⚡ התראות חיות</h2>
+        <div class="seg" id="alertFilter">
+          <button data-f="all" class="on">הכל</button><button data-f="critical">מכירה</button><button data-f="opportunity">הזדמנויות</button><button data-f="info">מידע</button>
+        </div>
+      </div>
+      <ul class="alert-list" id="alertList"></ul>
+    </article>
+  </section>
+
+  <!-- Holdings -->
+  <section class="card">
+    <div class="card-h"><h2>💼 התיק שלי</h2>
+      <div class="row gap">
+        <div class="seg" id="basketFilter"></div>
+        <button class="btn small" id="btnAddHolding">＋ פוזיציה</button>
+      </div>
+    </div>
+    <div class="legend-strip">
+      <span><i class="lg-ring"></i> ציון משוקלל (-100…100)</span>
+      <span><i class="lg-bb"></i> מיקום ברצועות בולינגר</span>
+      <span><i class="lg-st"></i> מסטופ ליעד</span>
+    </div>
+    <div class="holdings" id="holdings"></div>
+    <div class="warnings" id="warnings"></div>
+  </section>
+
+  <!-- Baskets + equity -->
+  <section class="grid two">
+    <article class="card">
+      <div class="card-h"><h2>🧺 סלים והקצאה</h2><span class="muted small">גודל = משקל · צבע = שינוי יומי</span></div>
+      <div class="alloc">
+        <svg id="donut" viewBox="0 0 200 200"></svg>
+        <div class="alloc-legend" id="allocLegend"></div>
+      </div>
+      <div class="treemap" id="treemap"></div>
+    </article>
+    <article class="card">
+      <div class="card-h"><h2>📈 שווי התיק</h2><span class="muted small" id="equityMeta"></span></div>
+      <div id="equityChart" class="chart-box"></div>
+      <div class="risk-meter" id="riskMeter"></div>
+    </article>
+  </section>
+
+  <!-- Opportunities -->
+  <section class="card">
+    <div class="card-h"><h2>🚀 הזדמנויות (רשימת מעקב)</h2>
+      <div class="row gap"><button class="btn small" id="btnAddWatch">＋ מעקב</button></div>
+    </div>
+    <div class="opps" id="opps"></div>
+  </section>
+
+  <!-- News -->
+  <section class="grid two">
+    <article class="card">
+      <div class="card-h"><h2>📰 חדשות וסנטימנט</h2>
+        <div class="seg" id="newsFilter"><button data-f="all" class="on">הכל</button><button data-f="news">חדשות</button><button data-f="social">רשתות</button><button data-f="MARKET">שוק</button></div>
+      </div>
+      <ul class="news-list" id="newsList"></ul>
+    </article>
+    <article class="card">
+      <div class="card-h"><h2>🗣️ סנטימנט רשתות ופוליטיקאים</h2></div>
+      <div id="socialBars" class="social-bars"></div>
+      <h3 class="sub-h">🏛️ עסקאות קונגרס במניות שלך</h3>
+      <ul class="congress" id="congress"></ul>
+    </article>
+  </section>
+
+  <footer class="foot muted small">אין לראות במידע ייעוץ השקעות. האיתותים נוצרים אוטומטית ממודלים ונתונים חינמיים ועלולים לטעות.</footer>
+</main>
+
+<!-- Stock detail drawer -->
+<div class="drawer" id="drawer" hidden>
+  <div class="drawer-bg" data-close></div>
+  <aside class="drawer-panel" role="dialog" aria-modal="true">
+    <div class="drawer-h">
+      <div><div class="dt-ticker" id="dTicker"></div><div class="muted" id="dName"></div></div>
+      <div class="row gap"><div id="dPrice" class="dt-price"></div><button class="btn ghost icon" data-close>✕</button></div>
+    </div>
+    <div class="drawer-body" id="dBody"></div>
+  </aside>
+</div>
+
+<!-- Settings / forms modal -->
+<div class="modal" id="modal" hidden>
+  <div class="drawer-bg" data-mclose></div>
+  <div class="modal-panel">
+    <div class="drawer-h"><h2 id="mTitle"></h2><button class="btn ghost icon" data-mclose>✕</button></div>
+    <div id="mBody"></div>
+  </div>
+</div>
+
+<div class="toasts" id="toasts"></div>
+<script src="/static/app.js"></script>
+</body>
+</html>

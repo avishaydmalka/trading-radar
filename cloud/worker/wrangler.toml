@@ -1,0 +1,19 @@
+# Cloudflare Worker for Trading Radar – deployed automatically by .github/workflows/deploy.yml
+name = "trading-radar"
+main = "src/index.js"
+compatibility_date = "2026-09-01"
+workers_dev = true
+
+[assets]
+directory = "./public"          # filled from app/static during deploy
+binding = "ASSETS"
+run_worker_first = true          # every request passes the password check first
+
+[[kv_namespaces]]
+binding = "RADAR"
+id = "__KV_NAMESPACE_ID__"       # replaced from the KV_NAMESPACE_ID GitHub secret during deploy
+
+[vars]
+DASHBOARD_USER = "admin"
+GITHUB_BRANCH = "main"
+ALPACA_BASE_URL = "https://paper-api.alpaca.markets"
