@@ -12,7 +12,7 @@ from . import db
 from .analysis import indicators, llm, risk, signals
 from .analysis.sentiment import aggregate
 from .config import settings
-from .data import news, prices
+from .data import news, prices, yf_extras
 from .notify import hub
 
 log = logging.getLogger("radar.engine")
@@ -182,6 +182,18 @@ def _scan(force_llm: bool) -> dict:
         congress[t] = _cached(f"congress:{t}", 6 * 3600, news.congress_trades, t) or []
     names = {t: funds[t].get("name") or prices.demo_name(t) for t in tickers}
 
+    # extra Yahoo Finance data (analysts, earnings, insiders, news) – refreshed ~twice a day per ticker
+    yfx, yf_budget = {}, 8
+    for t in tickers:
+        if db.cache_get(f"yfx:{t}", 12 * 3600) is None:
+            if yf_budget <= 0:
+                yfx[t] = db.cache_get(f"yfx:{t}", 10 ** 9) or (prev_snaps.get(t) or {}).get("yf") or {}
+                continue
+            yf_budget -= 1
+        yfx[t] = _cached(f"yfx:{t}", 12 * 3600, yf_extras.get_extras, t) or {}
+        for n in yfx[t].get("news", [])[:10]:  # yfinance's own news feed joins the other sources
+            db.upsert_news(news._item(t, f"{n['source']} · Yahoo", "news", n["title"], n["url"], n["ts"]))
+
     new_news: list[dict] = []
     if time.time() - state["last_news"] >= settings.NEWS_INTERVAL_MIN * 60 or state["scans"] == 0:
         new_news = collect_news(tickers, names)
@@ -197,7 +209,7 @@ def _scan(force_llm: bool) -> dict:
         d = indicators.enrich(df)
         ind = indicators.latest(d)
         h = hmap.get(t)
-        sigs = signals.evaluate(d, h)
+        sigs = signals.evaluate(d, h) + yf_extras.signals_from(yfx.get(t) or {}, ind["price"])
         tech = signals.technical_score(sigs, ind)
         recent = db.list_news(t, limit=40, since_hours=48)
         news_sent = aggregate(recent)
@@ -246,7 +258,7 @@ def _scan(force_llm: bool) -> dict:
         prev_codes = {s["code"] for s in prev.get("signals", [])}
         new_strong = bool({s["code"] for s in r["signals"] if s["strength"] >= 0.6} - prev_codes)
         due = force_llm or age >= settings.LLM_INTERVAL_MIN * 60 or (new_strong and age >= 600)
-        ctx = {"ticker": t, "name": names.get(t), "currency": prices.currency_of(t), "ind": r["ind"],
+        ctx = {"ticker": t, "name": names.get(t), "currency": prices.currency_of(t), "ind": r["ind"], "yf": yfx.get(t),
                "signals": r["signals"], "score": r["score"], "holding": r["holding"], "pnl_pct": r.get("pnl_pct"),
                "news": r["news"], "social": r["social"], "fundamentals": funds.get(t), "congress": congress.get(t),
                "sizing": None if r["holding"] else r["sizing"]}
@@ -286,6 +298,7 @@ def _scan(force_llm: bool) -> dict:
             "analysis": r["analysis"], "analysis_ts": r.get("analysis_ts"),
             "top_signal": top["title"] if top else "", "sizing": r["sizing"], "risk_issues": r["risk_issues"],
             "fundamentals": funds.get(t) or {}, "congress": congress.get(t) or [],
+            "yf": {k: v for k, v in (yfx.get(t) or {}).items() if k != "news"},
             "holding": {k: h[k] for k in ("shares", "avg_price", "stop_loss", "take_profit", "trailing_pct", "opened_at")} if h else None,
             "position": r.get("position"), "pnl_pct": r.get("pnl_pct"),
             "chart": indicators.chart_series(r["d"]), "updated": time.time(),
@@ -368,6 +381,11 @@ def generate_alerts(rows: dict, prev_snaps: dict, new_news: list[dict], congress
                      title=f"הזדמנות: {strong_bull[0]['title']}",
                      body=r["analysis"].get("headline") or strong_bull[0]["desc"], score=r["score"],
                      data={"price": price, "sizing": r["sizing"]})
+        if h:
+            for code, level in (("analyst_downgrade", "warning"), ("analyst_upgrade", "info"), ("earnings_soon", "info")):
+                if code in sigs:
+                    fire(f"{t}:{code}:{sigs[code]['desc'][:40]}", 72, ticker=t, kind="analyst", level=level,
+                         title=sigs[code]["title"], body=sigs[code]["desc"], score=r["score"], data={"price": price})
         if "bb_squeeze" in sigs and (h or r["score"] > 0):
             fire(f"{t}:squeeze", 48, ticker=t, kind="squeeze", level="info", title="סחיטת בולינגר",
                  body=sigs["bb_squeeze"]["desc"], score=r["score"], data={"price": price})

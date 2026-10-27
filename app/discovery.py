@@ -9,7 +9,7 @@ import time
 from . import db
 from .analysis import indicators, llm, risk, signals
 from .analysis.sentiment import aggregate
-from .data import news, prices
+from .data import news, prices, yf_extras
 
 log = logging.getLogger("radar.discovery")
 
@@ -84,6 +84,18 @@ def run(exclude_everywhere: set[str] | None = None, ai_budget: int = AI_REQUESTS
         c["final"] = round(max(-100.0, min(100.0, 0.8 * c["score"] + 25 * c["news_sent"])), 1)
     shortlist.sort(key=lambda c: -c["final"])
     top = shortlist[:TOP_KEEP]
+    for c in top:  # analyst/earnings data for the finalists
+        try:
+            c["yf"] = yf_extras.get_extras(c["t"])
+        except Exception:  # noqa: BLE001
+            c["yf"] = {}
+        extra = yf_extras.signals_from(c["yf"], c["ind"]["price"])
+        if extra:
+            c["sigs"] = c["sigs"] + extra
+            c["final"] = round(max(-100.0, min(100.0, c["final"] + 8 * sum(s["dir"] * s["strength"] for s in extra))), 1)
+        for n in c["yf"].get("news", [])[:5]:
+            c["news"].append(news._item(c["t"], f"{n['source']} · Yahoo", "news", n["title"], n["url"], n["ts"]))
+    top.sort(key=lambda c: -c["final"])
 
     llm.reset(ai_budget)
     items, stocks = [], {}
@@ -99,7 +111,8 @@ def run(exclude_everywhere: set[str] | None = None, ai_budget: int = AI_REQUESTS
         name = fund.get("name") or prices.demo_name(t)
         sizing = risk.position_size(ind, risk_cfg, 100000, 0, ccy, "USD", usdils)
         ctx = {"ticker": t, "name": name, "currency": ccy, "ind": ind, "signals": c["sigs"], "score": c["final"],
-               "holding": None, "news": c["news"], "social": {}, "fundamentals": fund, "congress": [], "sizing": sizing}
+               "holding": None, "news": c["news"], "social": {}, "fundamentals": fund, "congress": [], "sizing": sizing,
+               "yf": c.get("yf")}
         analysis = llm.analyze_stock(ctx) if i < AI_ANALYSES and llm.has_budget() else llm.rule_based_stock(ctx)
         topsig = max(c["sigs"], key=lambda s: s["strength"])
         snap = {
@@ -107,6 +120,7 @@ def run(exclude_everywhere: set[str] | None = None, ai_budget: int = AI_REQUESTS
             "ind": ind, "signals": c["sigs"], "tech_score": c["score"], "news_sentiment": c["news_sent"], "social": {},
             "score": c["final"], "action": analysis["action"], "analysis": analysis, "analysis_ts": time.time(),
             "top_signal": topsig["title"], "sizing": sizing, "risk_issues": [], "fundamentals": fund, "congress": [],
+            "yf": {k: v for k, v in (c.get("yf") or {}).items() if k != "news"},
             "holding": None, "position": None, "pnl_pct": None, "chart": indicators.chart_series(c["d"]),
             "news_items": c["news"], "alerts": [], "updated": time.time(), "rank": i + 1,
         }

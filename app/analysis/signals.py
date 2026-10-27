@@ -7,7 +7,7 @@ from __future__ import annotations
 
 import pandas as pd
 
-WEIGHTS = {"bollinger": 1.2, "momentum": 1.0, "trend": 1.1, "volume": 0.7, "exit": 1.6, "risk": 0.8}
+WEIGHTS = {"bollinger": 1.2, "momentum": 1.0, "trend": 1.1, "volume": 0.7, "exit": 1.6, "risk": 0.8, "analyst": 0.8}
 
 
 def _sig(code, cat, direction, strength, title, desc) -> dict:

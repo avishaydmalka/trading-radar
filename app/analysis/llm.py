@@ -356,6 +356,8 @@ def analyze_stock(ctx: dict) -> dict:
         if ctx.get("sizing"):
             sz = ctx["sizing"]
             lines.append(f"הצעת גודל פוזיציה: {sz.get('shares')} יח', סטופ מוצע {_fmt(sz.get('stop'))}, יעד {_fmt(sz.get('target'))}")
+    from ..data.yf_extras import summary_lines
+    lines += summary_lines(ctx.get("yf") or {})
     f = ctx.get("fundamentals") or {}
     if f:
         lines.append("פונדמנטלי: " + ", ".join(f"{k}={_fmt(v)}" for k, v in f.items() if k != "name"))

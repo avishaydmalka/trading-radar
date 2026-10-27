@@ -259,6 +259,17 @@ export function stockContext(s, extra = {}) {
   if (s.sizing) lines.push(`תוכנית מוצעת: כניסה ${fmt(s.sizing.entry)} סטופ ${fmt(s.sizing.stop)} יעד ${fmt(s.sizing.target)} (${s.sizing.shares ?? "?"} יח')`);
   const fk = Object.entries(f).filter(([k, v]) => v != null && k !== "name").map(([k, v]) => `${k}=${typeof v === "number" ? fmt(v) : v}`);
   if (fk.length) lines.push("פונדמנטלי: " + fk.join(", "));
+  const y = s.yf || {};
+  if (y.analyst || y.ratings) {
+    const a = y.analyst || {}, r = y.ratings;
+    lines.push(`אנליסטים (Yahoo Finance): דירוג ממוצע ${a.mean_rating ?? "n/a"} (1=קנייה חזקה, 5=מכירה), ${a.analysts ?? "?"} אנליסטים`
+      + (a.target_mean ? `, יעד ממוצע ${fmt(a.target_mean)} (טווח ${fmt(a.target_low)}–${fmt(a.target_high)})` : "")
+      + (r ? ` | התפלגות: ${Object.entries(r).map(([k, v]) => `${k} ${v}`).join(" / ")}` : ""));
+  }
+  if (y.changes?.length) lines.push("שינויי דירוג אחרונים: " + y.changes.slice(0, 4).map((c) => `${c.date} ${c.firm} ${c.action} → ${c.to}${c.target ? ` (יעד ${fmt(c.target)})` : ""}`).join("; "));
+  if (y.next_earnings) lines.push(`דוחות הבאים: ${y.next_earnings}${y.eps_estimate ? ` (צפי EPS ${fmt(y.eps_estimate)})` : ""}`);
+  if (y.eps_history?.length) lines.push("הפתעות EPS אחרונות: " + y.eps_history.filter((e) => e.surprise_pct != null).map((e) => `${e.quarter} ${e.surprise_pct > 0 ? "+" : ""}${fmt(e.surprise_pct, 1)}%`).join(", "));
+  if (y.insiders?.length) lines.push(`בעלי עניין: ${y.insiders.filter((i) => i.kind === "buy").length} קניות, ${y.insiders.filter((i) => i.kind === "sell").length} מכירות לאחרונה`);
   if (s.social?.messages) lines.push(`StockTwits: שוריים ${s.social.bull} / דוביים ${s.social.bear}`);
   if (s.congress?.length) lines.push("עסקאות קונגרס: " + s.congress.slice(0, 3).map((c) => `${c.member} ${c.type} ${c.amount} (${c.date})`).join("; "));
   const news = (s.news_items || []).slice(0, 8);

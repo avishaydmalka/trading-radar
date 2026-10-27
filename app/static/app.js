@@ -601,6 +601,8 @@ async function openStock(ticker) {
         : `<div class="empty">אין איתות פעיל – המניה בטווח</div>`}</div>
     </div>
 
+    ${yfPanelHTML(s)}
+
     <div class="panel"><h3>📊 נתונים</h3>
       <div class="metrics">
         <div class="metric"><div class="ml">RSI</div><div class="mv">${nf(ind.rsi, 0)}</div></div>
@@ -643,6 +645,38 @@ async function openStock(ticker) {
   history.replaceState(null, "", `?ticker=${encodeURIComponent(s.ticker)}`);
   // every stock gets a recommendation – ask the AI when there is no AI analysis yet
   if (state.cloud && (!s.analysis || !s.analysis.provider || s.analysis.provider === "rules") && s.source !== "tracked") fetchRecommendation(s);
+}
+
+function yfPanelHTML(s) {
+  const y = s.yf || {};
+  const a = y.analyst || {}, r = y.ratings, price = s.ind?.price;
+  if (!a.target_mean && !r && !(y.changes || []).length && !y.next_earnings) return "";
+  const RAT = [["strongBuy", "קנייה חזקה", css("--bull")], ["buy", "קנייה", "#7fcf5a"], ["hold", "החזקה", css("--warn")], ["sell", "מכירה", "#e0784a"], ["strongSell", "מכירה חזקה", css("--bear")]];
+  const tot = r ? RAT.reduce((sum, [k]) => sum + (r[k] || 0), 0) : 0;
+  const up = a.target_mean && price ? (a.target_mean / price - 1) * 100 : null;
+  // position of current price and mean target on the low..high target range
+  const lo = a.target_low, hi = a.target_high, span = hi && lo ? hi - lo : 0;
+  const pos = (v) => (span ? Math.max(0, Math.min(100, ((v - lo) / span) * 100)) : 50);
+  const ACT = { up: "⬆ שדרוג", upgrade: "⬆ שדרוג", down: "⬇ הורדה", downgrade: "⬇ הורדה", init: "✦ התחלת כיסוי", main: "= שמירה", reit: "= שמירה" };
+  return `<div class="panel yf-panel"><h3>🏦 אנליסטים ודוחות <span class="chip">Yahoo Finance</span></h3>
+    ${r && tot ? `<div class="bar-lbl"><span>המלצות ${tot} אנליסטים</span><span class="num">${a.mean_rating ? `דירוג ${nf(a.mean_rating, 2)} / 5` : ""}</span></div>
+      <div class="rat-bar">${RAT.map(([k, l, c]) => r[k] ? `<div style="flex:${r[k]};background:${c}" title="${l}: ${r[k]}"><span>${r[k]}</span></div>` : "").join("")}</div>
+      <div class="rat-legend">${RAT.map(([k, l, c]) => `<span><i style="background:${c}"></i>${l}</span>`).join("")}</div>` : ""}
+    ${a.target_mean ? `<div class="bar-lbl" style="margin-top:12px"><span>מחיר יעד ממוצע <b class="num">${nf(a.target_mean)}</b></span><span class="num ${cls(up)}">${up != null ? pct(up, 1) : ""} מהמחיר</span></div>
+      ${span ? `<div class="tgt-bar"><div class="tgt-mean" style="left:${pos(a.target_mean)}%" title="יעד ממוצע"></div><div class="dot" style="left:${pos(price)}%" title="מחיר נוכחי"></div></div>
+      <div class="bar-lbl" style="direction:ltr"><span class="num">${nf(lo)}</span><span class="muted" dir="rtl">טווח יעדים · ● מחיר נוכחי · ▮ יעד ממוצע</span><span class="num">${nf(hi)}</span></div>` : ""}` : ""}
+    <div class="metrics" style="margin-top:10px">
+      ${y.next_earnings ? `<div class="metric"><div class="ml">דוחות הבאים</div><div class="mv">${esc(y.next_earnings)}</div></div>` : ""}
+      ${y.eps_estimate != null ? `<div class="metric"><div class="ml">צפי EPS</div><div class="mv">${nf(y.eps_estimate)}</div></div>` : ""}
+      ${(y.eps_history || []).slice(0, 4).map((e) => `<div class="metric"><div class="ml">הפתעת EPS ${esc((e.quarter || "").slice(0, 7))}</div><div class="mv ${cls(e.surprise_pct)}">${pct(e.surprise_pct, 1)}</div></div>`).join("")}
+      ${y.ownership?.institutions_pct != null ? `<div class="metric"><div class="ml">מוסדיים</div><div class="mv">${nf(y.ownership.institutions_pct * 100, 1)}%</div></div>` : ""}
+      ${y.ownership?.short_pct_float != null ? `<div class="metric"><div class="ml">שורט מהמניות הצפות</div><div class="mv">${nf(y.ownership.short_pct_float * 100, 1)}%</div></div>` : ""}
+    </div>
+    ${(y.changes || []).length ? `<div class="small muted" style="margin:12px 0 6px">שינויי דירוג (60 יום)</div><table class="t"><tbody>${y.changes.slice(0, 6).map((c) => `<tr>
+      <td class="num">${esc(c.date || "")}</td><td>${esc(c.firm || "")}</td><td class="${/up/.test(c.action) ? "up" : /down/.test(c.action) ? "down" : ""}">${ACT[c.action] || esc(c.action)}</td>
+      <td>${esc(c.to || "")}</td><td class="num">${c.target ? nf(c.target) : ""}</td></tr>`).join("")}</tbody></table>` : ""}
+    ${(y.insiders || []).length ? `<div class="small muted" style="margin:12px 0 6px">עסקאות בעלי עניין</div><div class="chips">${y.insiders.slice(0, 6).map((i) => `<span class="chip ${i.kind === "buy" ? "bull" : i.kind === "sell" ? "bear" : ""}">${i.kind === "buy" ? "▲ קנייה" : i.kind === "sell" ? "▼ מכירה" : "•"} ${esc(i.role || i.who || "")} ${esc(i.date || "")}</span>`).join("")}</div>` : ""}
+  </div>`;
 }
 
 function aiBoxHTML(s, loading = false, err = "") {

@@ -388,3 +388,14 @@ input[type=email] { background: var(--bg); border: 1px solid var(--line-2); bord
   .topbar { flex-wrap: wrap; }
   .search { order: 3; flex-basis: 100%; max-width: none; }
 }
+
+/* ---------------- Yahoo Finance analysts panel */
+.rat-bar { display: flex; height: 22px; border-radius: 8px; overflow: hidden; gap: 2px; margin-top: 4px; } /* RTL: strong buy on the right, like the legend */
+.rat-bar div { display: grid; place-items: center; min-width: 18px; }
+.rat-bar span { font-family: var(--mono); font-size: 11.5px; color: #0a0f1c; font-weight: 700; }
+.rat-legend { display: flex; flex-wrap: wrap; gap: 10px; font-size: 11.5px; color: var(--text-2); margin-top: 6px; }
+.rat-legend i { display: inline-block; width: 9px; height: 9px; border-radius: 3px; margin-inline-end: 4px; vertical-align: middle; }
+.tgt-bar { position: relative; height: 8px; border-radius: 6px; background: linear-gradient(90deg, var(--bear-soft), var(--card-2), var(--bull-soft)); direction: ltr; margin: 10px 0 4px; }
+.tgt-mean { position: absolute; top: -4px; bottom: -4px; width: 3px; border-radius: 2px; background: var(--ai); transform: translateX(-50%); }
+.yf-panel table.t td { white-space: nowrap; }
+.yf-panel table.t { display: block; overflow-x: auto; }
