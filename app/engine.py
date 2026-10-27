@@ -20,7 +20,7 @@ log = logging.getLogger("radar.engine")
 INDEX_TICKERS = {"SPY": "S&P 500", "QQQ": "נאסד\"ק 100", "^VIX": "VIX פחד", "^TA125.TA": "ת\"א 125"}
 BRIEF_RESERVE = 4  # AI requests kept for the market brief in every scan
 
-ACTION_HE = {"BUY": "קנייה", "ADD": "הגדלה", "HOLD": "החזקה", "WATCH": "מעקב", "TRIM": "מימוש חלקי", "SELL": "מכירה"}
+ACTION_HE = {"BUY": "קנייה", "ADD": "הגדלה", "HOLD": "החזקה", "WATCH": "מעקב", "AVOID": "להימנע", "TRIM": "מימוש חלקי", "SELL": "מכירה"}
 
 state = {
     "running": False, "last_scan": None, "last_duration": None, "next_scan": None, "scans": 0,

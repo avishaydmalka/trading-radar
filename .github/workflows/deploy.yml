@@ -53,7 +53,7 @@ jobs:
         run: |
           export CLOUDFLARE_API_TOKEN="$(printf %s "$CLOUDFLARE_API_TOKEN" | tr -d '[:space:]')"
           export CLOUDFLARE_ACCOUNT_ID="$(printf %s "$CLOUDFLARE_ACCOUNT_ID" | tr -d '[:space:]')"
-          npx --yes wrangler@4 deploy --var "GITHUB_REPO:${{ github.repository }}"
+          npx --yes wrangler@4 deploy --var "GITHUB_REPO:${{ github.repository }}" --var "SHARED_LLM_DAILY_CALLS:${{ vars.SHARED_LLM_DAILY_CALLS || '300' }}"
 
       - name: Upload Worker secrets
         working-directory: cloud/worker
@@ -68,12 +68,15 @@ jobs:
           ALPACA_SECRET_KEY: ${{ secrets.ALPACA_SECRET_KEY }}
           GOOGLE_CLIENT_ID: ${{ secrets.GOOGLE_CLIENT_ID }}
           GOOGLE_CLIENT_SECRET: ${{ secrets.GOOGLE_CLIENT_SECRET }}
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
+          OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
         run: |
           export CLOUDFLARE_API_TOKEN="$(printf %s "$CLOUDFLARE_API_TOKEN" | tr -d '[:space:]')"
           export CLOUDFLARE_ACCOUNT_ID="$(printf %s "$CLOUDFLARE_ACCOUNT_ID" | tr -d '[:space:]')"
           python3 -c "
           import json, os
-          keys = ['DASHBOARD_PASSWORD','TELEGRAM_BOT_TOKEN','TELEGRAM_CHAT_ID','GH_DISPATCH_TOKEN','ALPACA_API_KEY','ALPACA_SECRET_KEY','GOOGLE_CLIENT_ID','GOOGLE_CLIENT_SECRET']
+          keys = ['DASHBOARD_PASSWORD','TELEGRAM_BOT_TOKEN','TELEGRAM_CHAT_ID','GH_DISPATCH_TOKEN','ALPACA_API_KEY','ALPACA_SECRET_KEY','GOOGLE_CLIENT_ID','GOOGLE_CLIENT_SECRET','GEMINI_API_KEY','GROQ_API_KEY','OPENROUTER_API_KEY']
           json.dump({k: os.environ[k].strip() for k in keys if os.environ.get(k, '').strip()}, open('secrets.json', 'w'))
           "
           npx --yes wrangler@4 secret bulk secrets.json

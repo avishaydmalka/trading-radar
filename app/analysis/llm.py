@@ -49,7 +49,7 @@ SYSTEM_PROMPT = (
 )
 
 STOCK_SCHEMA = """{
- "action": "BUY|ADD|HOLD|WATCH|TRIM|SELL",
+ "action": "למניה בתיק: ADD|HOLD|TRIM|SELL · למניה שלא בתיק: BUY|WATCH|AVOID",
  "confidence": 0-100,
  "headline": "משפט אחד חד",
  "summary": "2-3 משפטים",
@@ -352,7 +352,7 @@ def analyze_stock(ctx: dict) -> dict:
     if h:
         lines.append(f"בתיק: {h['shares']} יח' במחיר ממוצע {h['avg_price']} | סטופ {h.get('stop_loss')} | יעד {h.get('take_profit')} | רווח/הפסד {_fmt(ctx.get('pnl_pct'))}%")
     else:
-        lines.append("לא בתיק – מועמדת לכניסה.")
+        lines.append("לא בתיק – המלץ BUY (לקנות עכשיו), WATCH (לעקוב ולחכות לכניסה) או AVOID (להימנע).")
         if ctx.get("sizing"):
             sz = ctx["sizing"]
             lines.append(f"הצעת גודל פוזיציה: {sz.get('shares')} יח', סטופ מוצע {_fmt(sz.get('stop'))}, יעד {_fmt(sz.get('target'))}")
@@ -372,6 +372,10 @@ def analyze_stock(ctx: dict) -> dict:
     out, provider = complete_json(prompt)
     if out:
         out = _sanitize_stock(out)
+        if not h and out["action"] in ("HOLD", "ADD", "TRIM", "SELL"):
+            out["action"] = {"ADD": "BUY", "SELL": "AVOID", "TRIM": "AVOID"}.get(out["action"], "WATCH")
+        elif h and out["action"] in ("BUY", "WATCH", "AVOID"):
+            out["action"] = {"BUY": "ADD", "AVOID": "TRIM"}.get(out["action"], "HOLD")
         out["provider"] = provider
         return out
     return rule_based_stock(ctx)
@@ -401,7 +405,7 @@ def market_brief(ctx: dict) -> dict:
 
 def _sanitize_stock(o: dict) -> dict:
     act = str(o.get("action", "HOLD")).upper()
-    o["action"] = act if act in {"BUY", "ADD", "HOLD", "WATCH", "TRIM", "SELL"} else "HOLD"
+    o["action"] = act if act in {"BUY", "ADD", "HOLD", "WATCH", "AVOID", "TRIM", "SELL"} else "WATCH"
     try:
         o["confidence"] = int(max(0, min(100, float(o.get("confidence", 50)))))
     except (TypeError, ValueError):
@@ -427,12 +431,12 @@ def rule_based_stock(ctx: dict) -> dict:
     elif held:
         action = "ADD" if score >= 55 else "HOLD" if score > -25 else "TRIM" if score > -55 else "SELL"
     else:
-        action = "BUY" if score >= 55 else "WATCH" if score >= 15 else "HOLD"
+        action = "BUY" if score >= 55 else "WATCH" if score >= -20 else "AVOID"
     bull = [s["title"] for s in sorted(sigs, key=lambda x: -x["strength"]) if s["dir"] > 0][:4]
     bear = [s["title"] for s in sorted(sigs, key=lambda x: -x["strength"]) if s["dir"] < 0][:4]
     top = max(sigs, key=lambda x: x["strength"])["title"] if sigs else "אין איתות בולט"
     sz = ctx.get("sizing") or {}
-    names = {"BUY": "קנייה", "ADD": "הגדלה", "HOLD": "החזקה", "WATCH": "מעקב", "TRIM": "מימוש חלקי", "SELL": "מכירה"}
+    names = {"BUY": "קנייה", "ADD": "הגדלה", "HOLD": "החזקה", "WATCH": "מעקב", "AVOID": "להימנע", "TRIM": "מימוש חלקי", "SELL": "מכירה"}
     return {
         "action": action,
         "confidence": int(min(95, 40 + abs(score) * 0.55)),

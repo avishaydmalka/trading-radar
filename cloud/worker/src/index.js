@@ -10,7 +10,9 @@
  *          backtests (shared), vapid, public_url, tg_hook, session_key, fail:<uid>
  */
 
-const ACTION_HE = { BUY: "קנייה", ADD: "הגדלה", HOLD: "החזקה", WATCH: "מעקב", TRIM: "מימוש חלקי", SELL: "מכירה" };
+import { aiAccess, recordUsage, liveLookup, recommend, ask } from "./ai.js";
+
+const ACTION_HE = { BUY: "קנייה", ADD: "הגדלה", HOLD: "החזקה", WATCH: "מעקב", AVOID: "להימנע", TRIM: "מימוש חלקי", SELL: "מכירה" };
 const LEVEL_EMOJI = { critical: "🔴", warning: "🟡", opportunity: "🟢", info: "🔵" };
 const STRATEGIES = {
   bb_reversion: "בולינגר – חזרה לממוצע",
@@ -337,12 +339,52 @@ async function api(request, env, ctx, url, path, user) {
     }
   }
 
-  // ---- market data for this user
+  // ---- market data for this user (tracked → discovered → live lookup of any ticker)
   if (path.startsWith("/api/stock/")) {
     const t = norm(decodeURIComponent(path.split("/")[3]));
-    const raw = await sliceBundle(await userGet(env, "stocks", uid), t);
-    if (!raw) return json({ error: "not tracked" }, 404);
-    return new Response(raw, { headers: { "content-type": "application/json; charset=utf-8" } });
+    if (!/^[A-Z0-9.^=-]{1,15}$/.test(t)) return json({ error: "סימול לא תקין" }, 400);
+    const found = await findStock(env, user, t);
+    if (!found) return json({ error: `לא נמצאו נתונים עבור ${t}. למניות ת״א הוסף .TA (למשל TEVA.TA)` }, 404);
+    return json(found);
+  }
+
+  // ---- recommendation for any stock (cached 2h for stocks not in the user's portfolio)
+  if (path.startsWith("/api/recommend/") && m === "POST") {
+    const t = norm(decodeURIComponent(path.split("/")[3]));
+    const snap = await findStock(env, user, t);
+    if (!snap) return json({ error: "המניה לא נמצאה" }, 404);
+    const fresh = snap.analysis && snap.analysis.provider && snap.analysis.provider !== "rules" && Date.now() / 1000 - (snap.analysis_ts || 0) < 2 * 3600;
+    if (fresh && !body.force) return json({ analysis: snap.analysis, cached: true });
+    const users = await getUsers(env);
+    const access = await aiAccess(env, user, users);
+    if (access.error) return json({ error: access.error }, 429);
+    const extra = { portfolio: (await userGet(env, "dashboard", uid, "json"))?.portfolio };
+    const r = await recommend(env, access.keys, snap, extra);
+    await recordUsage(env, user, access, r.requests, "rec");
+    if (r.error) return json({ error: `ה‑AI לא ענה: ${r.error}` }, 502);
+    const rec = { ...r.analysis, ts: Date.now() / 1000 };
+    if (!snap.holding) await env.RADAR.put(`rec:${t}`, JSON.stringify(rec), { expirationTtl: 2 * 3600 });
+    return json({ analysis: rec });
+  }
+
+  // ---- free-text questions about a stock
+  if (path === "/api/ask" && m === "POST") {
+    const t = norm(body.ticker);
+    const q = clean(body.question);
+    if (!t || !q) return json({ error: "חסרים מניה או שאלה" }, 400);
+    const lastKey = `qa_last:${uid}`;
+    if (Date.now() - +((await env.RADAR.get(lastKey)) || 0) < 3000) return json({ error: "רגע… שאלה אחת בכל כמה שניות" }, 429);
+    await env.RADAR.put(lastKey, String(Date.now()), { expirationTtl: 60 });
+    const snap = await findStock(env, user, t);
+    if (!snap) return json({ error: "המניה לא נמצאה" }, 404);
+    const users = await getUsers(env);
+    const access = await aiAccess(env, user, users);
+    if (access.error) return json({ error: access.error }, 429);
+    const extra = { portfolio: (await userGet(env, "dashboard", uid, "json"))?.portfolio };
+    const r = await ask(env, access.keys, snap, q, body.history, extra);
+    await recordUsage(env, user, access, r.requests, "qa");
+    if (r.error) return json({ error: `ה‑AI לא ענה כרגע (${r.error.slice(0, 160)})` }, 502);
+    return json({ answer: r.answer, provider: r.provider, mode: access.mode });
   }
   if (path === "/api/backtest") {
     const t = norm(url.searchParams.get("ticker"));
@@ -476,6 +518,41 @@ function cleanHolding(h) {
   };
 }
 
+/** A stock's data for this user: their scanned snapshot, a discovered one, or a live lookup of any ticker. */
+async function findStock(env, user, t) {
+  let raw = sliceBundle(await userGet(env, "stocks", user.id), t);
+  if (raw) return { ...JSON.parse(raw), source: "tracked" };
+  let snap = null, source = "live";
+  raw = sliceBundle(await env.RADAR.get("discovery_stocks"), t);
+  if (raw) { snap = JSON.parse(raw); source = "discovery"; } else snap = await liveLookup(env, t);
+  if (!snap) return null;
+  const [cfg, dash, rec] = await Promise.all([getConfig(env, user.id), userGet(env, "dashboard", user.id, "json"), env.RADAR.get(`rec:${t}`, "json")]);
+  if (rec && (!snap.analysis || (snap.analysis_ts || 0) < rec.ts)) { snap.analysis = rec; snap.action = rec.action; snap.analysis_ts = rec.ts; }
+  if (!snap.analysis) snap.action = snap.score >= 55 ? "BUY" : snap.score >= -20 ? "WATCH" : "AVOID";
+  snap.sizing = sizeFor(snap, cfg.risk, dash?.portfolio) || snap.sizing;
+  snap.watching = cfg.watchlist.some((w) => w.ticker === t);
+  return { ...snap, source, is_holding: false, holding: null };
+}
+
+function sizeFor(snap, r, p) {
+  const i = snap.ind || {};
+  if (!i.price) return null;
+  const entry = i.price, atr = i.atr || entry * 0.02;
+  let stop = entry - (r.atr_stop_mult || 2) * atr;
+  if (i.bb_lo && entry > i.bb_lo && i.bb_lo > stop) stop = Math.min(stop, i.bb_lo * 0.99);
+  stop = Math.max(stop, entry * 0.75);
+  const perShare = entry - stop, target = entry + (r.reward_risk || 2) * perShare;
+  const fx = (v) => (snap.currency === "ILS" && (p?.base || "USD") === "USD" ? v / (p?.usdils || 3.7) : snap.currency === "USD" && p?.base === "ILS" ? v * (p?.usdils || 3.7) : v);
+  const total = p?.total || 0, cash = p?.cash || 0;
+  const byRisk = total * (r.risk_per_trade_pct || 1) / 100 / fx(perShare), byCap = total * (r.max_position_pct || 15) / 100 / fx(entry);
+  const byCash = cash > 0 ? cash / fx(entry) : Infinity;
+  const shares = total ? Math.max(0, Math.floor(Math.min(byRisk, byCap, byCash))) : null;
+  return { entry, stop, target, shares, cost: shares != null ? Math.round(shares * fx(entry) * 100) / 100 : null,
+    risk_amount: shares != null ? Math.round(shares * fx(perShare) * 100) / 100 : null, rr: r.reward_risk || 2,
+    stop_pct: (stop / entry - 1) * 100, target_pct: (target / entry - 1) * 100,
+    limited_by: shares == null ? null : byRisk <= byCap && byRisk <= byCash ? "risk" : byCap <= byCash ? "max_position" : "cash" };
+}
+
 function sliceBundle(text, ticker) {
   if (!text) return null;
   const marker = `\n@@${ticker}\n`;
@@ -508,6 +585,11 @@ async function dashboard(env, user) {
   }
   const watched = new Set(cfg.watchlist.map((w) => w.ticker));
   d.opportunities = d.opportunities.filter((o) => watched.has(o.ticker));
+  const disc = await kvJSON(env, "discovery");
+  if (disc) {
+    const mine = new Set([...held, ...watched]);
+    d.discovery = { ts: disc.ts, scanned: disc.scanned, items: (disc.items || []).filter((x) => !mine.has(x.ticker)).slice(0, 5) };
+  }
   const read = +(readTs || 0);
   d.alerts.forEach((a) => { a.read = a.ts <= read ? 1 : 0; });
   d.unread = d.alerts.filter((a) => !a.read).length;
@@ -550,7 +632,8 @@ async function housekeeping(env, url) {
       method: "POST", headers: { "content-type": "application/json" },
       body: JSON.stringify({ commands: [
         { command: "portfolio", description: "מצב התיק" }, { command: "top", description: "הזדמנויות מובילות" },
-        { command: "stock", description: "ניתוח מניה: /stock NVDA" }, { command: "brief", description: "תדריך שוק" },
+        { command: "stock", description: "ניתוח מניה: /stock NVDA" }, { command: "ask", description: "שאל על מניה: /ask NVDA שאלה" },
+        { command: "discover", description: "TOP 5 הזדמנויות חדשות" }, { command: "brief", description: "תדריך שוק" },
         { command: "alerts", description: "התראות אחרונות" }, { command: "scan", description: "סריקה עכשיו" } ] }),
     });
   }
@@ -572,7 +655,7 @@ const esc = (s) => String(s ?? "").replace(/[&<>]/g, (c) => ({ "&": "&amp;", "<"
 const f2 = (v, d = 2) => (v == null || isNaN(v) ? "—" : Number(v).toLocaleString("en-US", { minimumFractionDigits: d, maximumFractionDigits: d }));
 const sg = (v, d = 0) => (v == null ? "—" : (v > 0 ? "+" : "") + f2(v, d));
 
-const HELP = "<b>רדאר מסחר – פקודות</b>\n/portfolio – מצב התיק\n/top – הזדמנויות מובילות\n/stock TICKER – ניתוח מניה\n/brief – תדריך שוק\n/alerts – התראות אחרונות\n/scan – סריקה עכשיו";
+const HELP = "<b>רדאר מסחר – פקודות</b>\n/portfolio – מצב התיק\n/top – הזדמנויות ברשימת המעקב\n/discover – TOP 5 הזדמנויות חדשות\n/stock TICKER – ניתוח מניה (כל מניה)\n/ask TICKER שאלה – שאל על מניה\n/brief – תדריך שוק\n/alerts – התראות אחרונות\n/scan – סריקה עכשיו";
 
 async function telegramWebhook(request, env, ctx, secret) {
   const hook = await kvJSON(env, "tg_hook", {});
@@ -596,12 +679,31 @@ async function telegramWebhook(request, env, ctx, secret) {
 
   let reply = HELP;
   const d = await dashboard(env, user);
-  if (d.empty && cmd !== "scan") reply = "אין עדיין נתונים לתיק שלך – הוסף מניות בדשבורד והמתן לסריקה.";
+  if (d.empty && !["scan", "ask", "stock", "discover"].includes(cmd)) reply = "אין עדיין נתונים לתיק שלך – הוסף מניות בדשבורד והמתן לסריקה.";
   else if (cmd === "portfolio") reply = tgPortfolio(d);
   else if (cmd === "top") reply = tgTop(d);
   else if (cmd === "brief") reply = tgBrief(d);
   else if (cmd === "alerts") reply = tgAlerts(d);
   else if (cmd === "stock") reply = await tgStock(env, user, norm(arg));
+  else if (cmd === "discover") reply = tgDiscover(d);
+  else if (cmd === "ask") {
+    const [tk, ...qs] = arg.split(/\s+/);
+    const q = qs.join(" ").trim();
+    if (!tk || !q) reply = "שימוש: /ask NVDA כדאי להגדיל פוזיציה?";
+    else {
+      const snap = await findStock(env, user, norm(tk));
+      if (!snap) reply = `לא נמצאו נתונים עבור ${esc(norm(tk))}`;
+      else {
+        const access = await aiAccess(env, user, await getUsers(env));
+        if (access.error) reply = `⚠️ ${esc(access.error)}`;
+        else {
+          const r = await ask(env, access.keys, snap, q, [], { portfolio: d.portfolio });
+          await recordUsage(env, user, access, r.requests, "qa");
+          reply = r.answer ? `💬 <b>${esc(snap.ticker)}</b>\n${esc(r.answer)}` : `⚠️ ה‑AI לא ענה כרגע`;
+        }
+      }
+    }
+  }
   else if (cmd === "scan") {
     const r = await dispatchScan(env, user.id, false, true);
     reply = r.error ? `⚠️ ${esc(r.error)}` : r.status === "busy" ? "סריקה כבר התחילה לפני רגע." : "🔄 סריקה התחילה (כ-2 דקות). התראות יישלחו אם יימצא משהו.";
@@ -650,15 +752,25 @@ function tgAlerts(d) {
   }).join("\n");
 }
 
+function tgDiscover(d) {
+  const items = d.discovery?.items || [];
+  if (!items.length) return "אין עדיין רשימת גילוי – היא נבנית כל 3 שעות בזמן מסחר.";
+  return ["🔭 <b>TOP 5 הזדמנויות חדשות</b>", ...items.map((o, i) => {
+    const z = o.sizing || {};
+    return `${i + 1}. <b>${esc(o.ticker)}</b> ${esc(o.name || "")} · ${sg(o.score)} · ${ACTION_HE[o.action] || ""}\n   ${esc(o.analysis?.headline || o.top_signal || "")}\n   כניסה ${f2(z.entry)} סטופ ${f2(z.stop)} יעד ${f2(z.target)}`;
+  }), "", "/stock TICKER לפרטים · /ask TICKER שאלה"].join("\n");
+}
+
 async function tgStock(env, user, t) {
   if (!t) return "שימוש: /stock NVDA";
-  const raw = sliceBundle(await userGet(env, "stocks", user.id), t);
-  if (!raw) return `${esc(t)} לא בתיק או ברשימת המעקב שלך.`;
-  const s = JSON.parse(raw), a = s.analysis || {}, i = s.ind || {};
+  const s = await findStock(env, user, t);
+  if (!s) return `לא נמצאו נתונים עבור ${esc(t)}.`;
+  const a = s.analysis || {}, i = s.ind || {};
   const lines = [`📈 <b>${esc(t)}</b> ${esc(s.name || "")}`,
     `מחיר ${f2(i.price)} (${sg(i.change_pct, 2)}%) · RSI ${f2(i.rsi, 0)} · %B ${f2(i.bb_pctb)}`,
     `ציון <b>${sg(s.score)}</b> · ${ACTION_HE[s.action] || ""} (${a.confidence || 0}%)`,
-    `<i>${esc(a.headline || "")}</i>`, esc(a.summary || "")];
+    `<i>${esc(a.headline || s.top_signal || "")}</i>`, esc(a.summary || "")];
+  if (!a.headline) lines.push(`<i>להמלצת AI מלאה: /ask ${esc(t)} כדאי לקנות?</i>`);
   if (a.bull?.length) lines.push("✅ " + a.bull.slice(0, 3).map(esc).join(" | "));
   if (a.bear?.length) lines.push("⚠️ " + a.bear.slice(0, 3).map(esc).join(" | "));
   return lines.join("\n");

@@ -303,6 +303,7 @@ def main() -> int:
     usage = kv.get_json("llm_usage") or {}
     if usage.get("date") != today:
         usage = {"date": today, "total": 0, "users": {}}
+    usage_start = json.loads(json.dumps(usage))  # to merge with requests the Worker counts meanwhile (Q&A)
     owns = {u["id"]: own_keys(kv, u["id"]) for u in users}
     n_shared = sum(1 for u in users if not owns[u["id"]])
 
@@ -350,6 +351,35 @@ def main() -> int:
         kv.put("backtests", bundle(bts))
         kv.put_json("backtests_meta", {"ts": time.time(), "tickers": tickers})
 
+    # ---- discovery: TOP opportunities outside everyone's lists (every 3 hours, shared AI key)
+    from app import discovery
+    from app.config import settings as _settings
+    disc_meta = kv.get_json("discovery_meta")
+    if (discovery.due(disc_meta) or force) and (not only or force):
+        try:
+            _settings.GEMINI_API_KEY = SHARED_KEYS["GEMINI_API_KEY"]
+            _settings.GROQ_API_KEY = SHARED_KEYS["GROQ_API_KEY"]
+            _settings.OPENROUTER_API_KEY = SHARED_KEYS["OPENROUTER_API_KEY"]
+            ai_budget = max(0, min(discovery.AI_REQUESTS, SHARED_DAILY - usage["total"])) if any(SHARED_KEYS.values()) else 0
+            res = discovery.run(ai_budget=ai_budget)
+            usage["total"] += res["ai_requests"]
+            usage["discovery"] = usage.get("discovery", 0) + res["ai_requests"]
+            kv.put("discovery_stocks", bundle(res.pop("stocks")))
+            kv.put_json("discovery", res)
+            kv.put_json("discovery_meta", {"ts": res["ts"]})
+            ai_report.append(("🔭 גילוי", "shared", res["ai_requests"],
+                              f"top: {', '.join(i['ticker'] for i in res['items'][:5])} (scanned {res['scanned']})"))
+        except Exception:  # noqa: BLE001
+            log.exception("discovery failed")
+
+    # merge: keep requests the Worker counted while this run was going
+    latest = kv.get_json("llm_usage") or {}
+    if latest.get("date") == usage["date"]:
+        usage["total"] = latest.get("total", 0) + (usage["total"] - usage_start.get("total", 0))
+        for k in set(usage["users"]) | set(latest.get("users", {})):
+            usage["users"][k] = latest.get("users", {}).get(k, 0) + (usage["users"].get(k, 0) - usage_start.get("users", {}).get(k, 0))
+        for k in ("qa", "discovery"):
+            usage[k] = latest.get(k, 0) + (usage.get(k, 0) - usage_start.get(k, 0))
     kv.put_json("llm_usage", usage)
     if _llm._good_gemini:
         kv.put_json("llm_state", {"gemini_good": _llm._good_gemini, "ts": time.time()})

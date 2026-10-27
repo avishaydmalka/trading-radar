@@ -21,6 +21,9 @@
     <svg class="brand-mark" viewBox="0 0 32 32" aria-hidden="true"><circle cx="16" cy="16" r="14" fill="none" stroke="currentColor" stroke-width="2" opacity=".35"/><circle cx="16" cy="16" r="8" fill="none" stroke="currentColor" stroke-width="2" opacity=".6"/><path d="M16 16 L27 9" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"/><circle cx="23" cy="11" r="2.4" fill="var(--bull)"/></svg>
     <div><div class="brand-name">רדאר מסחר</div><div class="brand-sub" id="scanInfo">טוען…</div></div>
   </div>
+  <form class="search" id="searchForm" role="search">
+    <input type="search" id="searchInput" placeholder="🔎 חפש מניה: AAPL, TEVA.TA" autocomplete="off" autocapitalize="characters" dir="ltr" aria-label="חיפוש מניה">
+  </form>
   <div class="markets" id="markets"></div>
   <div class="top-actions">
     <button class="btn ghost" id="btnScan" title="סרוק עכשיו"><span class="spin-ico">⟳</span><span class="lbl"> סרוק</span></button>
@@ -94,6 +97,13 @@
       <div class="row gap"><button class="btn small" id="btnAddWatch">＋ מעקב</button></div>
     </div>
     <div class="opps" id="opps"></div>
+  </section>
+
+  <!-- Discovery -->
+  <section class="card" id="discoverySec" hidden>
+    <div class="card-h"><h2>🔭 TOP 5 – הזדמנויות חדשות</h2><span class="muted small" id="discMeta"></span></div>
+    <p class="muted small" style="margin:-6px 0 12px">מניות שלא בתיק ולא במעקב שלך, עם ההגדרה הטכנית והחדשותית החזקה ביותר מתוך כ‑150 מניות מובילות בארה״ב ובת״א.</p>
+    <div class="opps" id="discovery"></div>
   </section>
 
   <!-- News -->

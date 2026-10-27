@@ -4,9 +4,9 @@
 const $ = (s, el = document) => el.querySelector(s);
 const $$ = (s, el = document) => [...el.querySelectorAll(s)];
 const STATIC = window.__SNAPSHOT__ || null; // static demo mode (no server)
-const state = { d: null, basket: "all", alertFilter: "all", newsFilter: "all", charts: {}, es: null };
+const state = { chat: {}, stock: null, d: null, basket: "all", alertFilter: "all", newsFilter: "all", charts: {}, es: null };
 
-const ACTION_HE = { BUY: "קנייה", ADD: "הגדלה", HOLD: "החזקה", WATCH: "מעקב", TRIM: "מימוש חלקי", SELL: "מכירה" };
+const ACTION_HE = { BUY: "קנייה", ADD: "הגדלה", HOLD: "החזקה", WATCH: "מעקב", AVOID: "להימנע", TRIM: "מימוש חלקי", SELL: "מכירה" };
 const LEVEL = {
   critical: { ico: "🛑", he: "מכירה/סטופ" }, warning: { ico: "⚠️", he: "אזהרה" },
   opportunity: { ico: "🚀", he: "הזדמנות" }, info: { ico: "ℹ️", he: "מידע" },
@@ -120,6 +120,7 @@ function render() {
   renderAlloc(d.portfolio);
   renderEquity(d);
   renderOpps();
+  renderDiscovery();
   renderNews();
   renderSocial();
   renderCongress();
@@ -392,6 +393,28 @@ function renderOpps() {
   }).join("") : `<div class="empty">הוסף מניות לרשימת המעקב כדי לקבל הזדמנויות</div>`;
 }
 
+function renderDiscovery() {
+  const sec = $("#discoverySec");
+  const disc = state.d.discovery;
+  if (!state.cloud || !disc) { sec.hidden = true; return; }
+  sec.hidden = false;
+  $("#discMeta").textContent = `עודכן ${ago(disc.ts)} · נסרקו ${disc.scanned || "—"} מניות`;
+  $("#discovery").innerHTML = (disc.items || []).length ? disc.items.map((o, i) => {
+    const sz = o.sizing || {}, a = o.analysis || {}, ind = o.ind || {};
+    return `<div class="hcard opp disc" data-ticker="${esc(o.ticker)}">
+      <span class="rank">#${i + 1}</span>
+      <div class="h-top"><div><div class="h-tk">${esc(o.ticker)}</div><div class="h-name">${esc(o.name)}${o.fundamentals?.sector ? ` · ${esc(o.fundamentals.sector)}` : ""}</div></div>
+        <span class="action act-${o.action}">${ACTION_HE[o.action] || o.action}</span></div>
+      <div class="h-mid">${ring(o.score)}<div><div class="h-price">${sym(o.currency)}${nf(ind.price)} <span class="${cls(ind.change_pct)}" style="font-size:13px">${pct(ind.change_pct)}</span></div>${spark(o.spark)}</div></div>
+      <div class="why">${esc(a.headline || o.top_signal || "")}</div>
+      <div class="plan"><div>כניסה<b>${nf(sz.entry)}</b></div><div>סטופ<b class="down">${nf(sz.stop)}</b></div><div>יעד<b class="up">${nf(sz.target)}</b></div><div>R:R<b>1:${nf(sz.rr, 1)}</b></div></div>
+      <div class="sig-row">${sigChips(o.signals)}</div>
+      <button class="btn small" data-watch-add="${esc(o.ticker)}">👁 הוסף למעקב</button>
+    </div>`;
+  }).join("") : `<div class="empty">לא נמצאו כרגע הזדמנויות חזקות מחוץ לרשימות שלך</div>`;
+  $$("#discovery [data-watch-add]").forEach((b) => b.onclick = (e) => { e.stopPropagation(); addToWatch(b.dataset.watchAdd, b); });
+}
+
 function renderNews() {
   const f = state.newsFilter;
   const rows = state.d.news.filter((n) => f === "all" || (f === "MARKET" ? n.ticker === "MARKET" : n.kind === f || (f === "news" && n.kind === "influencer")));
@@ -514,11 +537,15 @@ async function logout() {
 /* ------------------------------------------------------------------ stock drawer */
 async function openStock(ticker) {
   if (!ticker) return;
+  ticker = String(ticker).trim().toUpperCase();
   const s = await api(`/api/stock/${encodeURIComponent(ticker)}`);
-  if (!s || s.error) { toast({ level: "warning", title: ticker, body: "המניה עוד לא נסרקה" }); return; }
-  const ind = s.ind, a = s.analysis || {}, ccy = s.currency;
+  if (!s || s.error) { toast({ level: "warning", title: ticker, body: s?.error || "המניה עוד לא נסרקה" }); return; }
+  state.stock = s;
+  const ind = s.ind, ccy = s.currency;
+  const tracked = s.source === "tracked" || (!s.source && !STATIC) || STATIC;
   $("#dTicker").textContent = s.ticker;
-  $("#dName").textContent = `${s.name || ""} · ${s.basket || ""}`;
+  $("#dName").innerHTML = `${esc(s.name || "")}${s.basket ? ` · ${esc(s.basket)}` : ""}
+    ${s.source === "discovery" ? ` <span class="chip bull">🔭 TOP ${s.rank || ""} גילוי</span>` : s.source === "live" ? ` <span class="chip">🔎 לא במעקב</span>` : ""}`;
   $("#dPrice").innerHTML = `${sym(ccy)}${nf(ind.price)} <div class="${cls(ind.change_pct)}" style="font-size:14px">${pct(ind.change_pct)}</div>`;
   const h = s.holding, pos = s.position, sz = s.sizing || {};
   const lots = state.d?.lots?.filter((l) => l.ticker === s.ticker) || [];
@@ -528,16 +555,8 @@ async function openStock(ticker) {
     ["בטא", f.beta, 2], ["דוחות הבאים", f.next_earnings], ["שווי שוק", f.market_cap ? f.market_cap / 1e9 : null, 1, "B"]].filter((x) => x[1] != null);
 
   $("#dBody").innerHTML = `
-    <div class="panel ai-box">
-      <div class="ai-head"><h3>🤖 ניתוח ${a.provider && a.provider !== "rules" ? `<span class="chip ai">${esc(a.provider)}</span>` : `<span class="chip">חוקים</span>`}</h3>
-        <div class="row gap"><span class="action act-${s.action}">${ACTION_HE[s.action] || s.action}</span>
-          <div class="conf">ביטחון <div class="conf-track"><div style="width:${a.confidence || 0}%"></div></div><span class="num">${a.confidence || 0}%</span></div></div></div>
-      <p style="margin:10px 0 4px;font-weight:600">${esc(a.headline || "")}</p>
-      <p style="margin:0 0 10px;color:var(--text-2)">${esc(a.summary || "")}</p>
-      <div class="two-col"><div><div class="small muted">בעד</div><ul class="pros">${(a.bull || []).map((x) => `<li>${esc(x)}</li>`).join("") || "<li>—</li>"}</ul></div>
-        <div><div class="small muted">סיכונים</div><ul class="cons">${(a.bear || []).map((x) => `<li>${esc(x)}</li>`).join("") || "<li>—</li>"}</ul></div></div>
-      <div class="muted small" style="margin-top:8px">עודכן ${ago(s.analysis_ts)} · ציון טכני ${signed(s.tech_score)} · סנטימנט חדשות ${signed((s.news_sentiment || 0) * 100)}</div>
-    </div>
+    <div class="panel ai-box" id="aiBox">${aiBoxHTML(s)}</div>
+    ${state.cloud ? chatPanelHTML(s) : ""}
 
     <div class="panel">
       <div class="chart-legend"><span><i style="background:${css("--s1")}"></i>רצועות בולינגר (20,2)</span><span><i style="background:${css("--s4")}"></i>ממוצע 50</span><span><i style="background:${css("--s6")}"></i>ממוצע 200</span><span id="ohlc" class="num"></span></div>
@@ -569,6 +588,7 @@ async function openStock(ticker) {
       ${(s.risk_issues || []).length && !h ? `<div class="warnings">${s.risk_issues.map((x) => `<div class="warn-row">⚠️ ${esc(x)}</div>`).join("")}</div>` : ""}
       <div class="row gap" style="margin-top:12px;flex-wrap:wrap">
         ${h ? lots.map((l) => `<button class="btn small" data-edit-lot="${l.id}">✏️ ערוך${lots.length > 1 ? ` (${nf(l.shares, 0)} יח׳)` : ""}</button>`).join("") : `<button class="btn small primary" data-add-from="${esc(s.ticker)}">＋ הוסף לתיק</button>`}
+        ${!h && !s.watching && s.source && s.source !== "tracked" ? `<button class="btn small" data-watch-add="${esc(s.ticker)}">👁 הוסף למעקב</button>` : ""}
         ${state.d?.features?.broker && !s.ticker.endsWith(".TA") ? `<button class="btn small" data-order="${esc(s.ticker)}">📤 שלח פקודה (Paper)</button>` : ""}
       </div>
     </div>
@@ -617,7 +637,100 @@ async function openStock(ticker) {
   $$("[data-edit-lot]").forEach((b) => b.onclick = () => holdingForm(state.d.lots.find((l) => l.id === +b.dataset.editLot)));
   $$("[data-add-from]").forEach((b) => b.onclick = () => holdingForm({ ticker: b.dataset.addFrom, avg_price: sz.entry, stop_loss: sz.stop, take_profit: sz.target, shares: sz.shares, basket: s.basket }));
   $$("[data-order]").forEach((b) => b.onclick = () => orderForm(s));
+  $$("[data-watch-add]").forEach((b) => b.onclick = () => addToWatch(b.dataset.watchAdd, b));
+  bindAIBox(s);
+  if (state.cloud) bindChat(s);
   history.replaceState(null, "", `?ticker=${encodeURIComponent(s.ticker)}`);
+  // every stock gets a recommendation – ask the AI when there is no AI analysis yet
+  if (state.cloud && (!s.analysis || !s.analysis.provider || s.analysis.provider === "rules") && s.source !== "tracked") fetchRecommendation(s);
+}
+
+function aiBoxHTML(s, loading = false, err = "") {
+  const a = s.analysis || {};
+  const isAI = a.provider && a.provider !== "rules";
+  return `
+    <div class="ai-head"><h3>🤖 המלצה ${isAI ? `<span class="chip ai">${esc(a.provider.split(":")[0])}</span>` : `<span class="chip">חוקים</span>`}</h3>
+      <div class="row gap"><span class="action act-${s.action}">${ACTION_HE[s.action] || s.action || "—"}</span>
+        <div class="conf">ביטחון <div class="conf-track"><div style="width:${a.confidence || 0}%"></div></div><span class="num">${a.confidence || 0}%</span></div></div></div>
+    ${loading ? `<div class="ai-loading"><span class="dots"><i></i><i></i><i></i></span> ה‑AI מנתח את ${esc(s.ticker)}…</div>` : ""}
+    ${err ? `<div class="warn-row" style="margin-top:8px">${esc(err)}</div>` : ""}
+    ${a.headline || a.summary ? `<p style="margin:10px 0 4px;font-weight:600">${esc(a.headline || "")}</p>
+      <p style="margin:0 0 10px;color:var(--text-2)">${esc(a.summary || "")}</p>
+      <div class="two-col"><div><div class="small muted">בעד</div><ul class="pros">${(a.bull || []).map((x) => `<li>${esc(x)}</li>`).join("") || "<li>—</li>"}</ul></div>
+        <div><div class="small muted">סיכונים</div><ul class="cons">${(a.bear || []).map((x) => `<li>${esc(x)}</li>`).join("") || "<li>—</li>"}</ul></div></div>
+      ${a.entry || a.stop || a.target ? `<div class="chips" style="margin-top:8px">${a.entry ? `<span class="chip">כניסה ${nf(a.entry)}</span>` : ""}${a.stop ? `<span class="chip bear">סטופ ${nf(a.stop)}</span>` : ""}${a.target ? `<span class="chip bull">יעד ${nf(a.target)}</span>` : ""}${a.horizon ? `<span class="chip">טווח: ${esc(a.horizon)}</span>` : ""}</div>` : ""}`
+      : loading ? "" : `<p class="muted small" style="margin:10px 0">${s.top_signal ? `איתות מוביל: ${esc(s.top_signal)}` : "אין עדיין ניתוח AI למניה הזו."}</p>`}
+    <div class="row gap" style="justify-content:space-between;margin-top:8px;flex-wrap:wrap">
+      <span class="muted small">${s.analysis_ts ? `עודכן ${ago(s.analysis_ts)} · ` : ""}ציון טכני ${signed(s.tech_score ?? s.score)}${s.news_sentiment != null ? ` · סנטימנט חדשות ${signed((s.news_sentiment || 0) * 100)}` : ""}</span>
+      ${state.cloud && !loading ? `<button class="btn small" id="recBtn">🔄 המלצה עדכנית מה‑AI</button>` : ""}
+    </div>`;
+}
+
+function bindAIBox(s) {
+  const b = $("#recBtn");
+  if (b) b.onclick = () => fetchRecommendation(s, true);
+}
+
+async function fetchRecommendation(s, force = false) {
+  $("#aiBox").innerHTML = aiBoxHTML(s, true);
+  const r = await api(`/api/recommend/${encodeURIComponent(s.ticker)}`, { method: "POST", body: { force } });
+  if (state.stock?.ticker !== s.ticker) return;
+  if (r.error) { $("#aiBox").innerHTML = aiBoxHTML(s, false, r.error); bindAIBox(s); return; }
+  s.analysis = r.analysis; s.action = r.analysis.action; s.analysis_ts = r.analysis.ts || Date.now() / 1000;
+  $("#aiBox").innerHTML = aiBoxHTML(s);
+  bindAIBox(s);
+}
+
+async function addToWatch(ticker, btn) {
+  const r = await api("/api/watchlist", { method: "POST", body: { ticker, basket: "מעקב" } });
+  if (r.error) return toast({ level: "warning", title: "שגיאה", body: r.error });
+  if (btn) { btn.disabled = true; btn.textContent = "✓ במעקב"; }
+  toast({ level: "opportunity", title: `${ticker} נוסף למעקב`, body: "יופיע ברשימת המעקב אחרי הסריקה הבאה" });
+  setTimeout(load, 2500);
+}
+
+/* ------------------------------------------------------------------ ask about a stock */
+const CHAT_SUGGEST = {
+  held: ["כדאי להגדיל או לממש?", "איפה כדאי להזיז את הסטופ?", "מה הסיכון הכי גדול כרגע?", "מה אומרות החדשות האחרונות?"],
+  free: ["כדאי לקנות עכשיו?", "איפה נקודת כניסה טובה?", "מה הסיכונים?", "מה אומרות החדשות האחרונות?"],
+};
+
+function chatPanelHTML(s) {
+  const hist = (state.chat ||= {})[s.ticker] || [];
+  const sugg = CHAT_SUGGEST[s.holding ? "held" : "free"];
+  return `<div class="panel chat-panel">
+    <h3>💬 שאל על ${esc(s.ticker)}</h3>
+    <div class="chat-log" id="chatLog" aria-live="polite">${hist.length ? hist.map(chatMsgHTML).join("") : `<div class="muted small">שאל כל שאלה בשפה חופשית – ה‑AI עונה לפי הנתונים, האיתותים, החדשות והפוזיציה שלך.</div>`}</div>
+    <div class="chips chat-sugg">${sugg.map((q) => `<button type="button" class="chip" data-q="${esc(q)}">${esc(q)}</button>`).join("")}</div>
+    <form class="chat-form" id="chatForm"><input type="text" id="chatInput" maxlength="500" placeholder="למשל: מה דעתך על הדוחות הקרובים?" autocomplete="off"><button class="btn primary" id="chatSend">שלח</button></form>
+  </div>`;
+}
+
+function chatMsgHTML(m) {
+  return `<div class="msg ${m.role}">${m.role === "assistant" ? `<div class="who">🤖 ${esc((m.provider || "AI").split(":")[0])}</div>` : ""}<div class="bubble">${esc(m.text).replace(/\n/g, "<br>")}</div></div>`;
+}
+
+function bindChat(s) {
+  const send = async (q) => {
+    q = (q || "").trim();
+    if (!q) return;
+    const hist = (state.chat[s.ticker] ||= []);
+    hist.push({ role: "user", text: q });
+    const log = $("#chatLog");
+    log.innerHTML = hist.map(chatMsgHTML).join("") + `<div class="msg assistant"><div class="bubble"><span class="dots"><i></i><i></i><i></i></span></div></div>`;
+    log.scrollTop = log.scrollHeight;
+    $("#chatInput").value = ""; $("#chatSend").disabled = true;
+    const r = await api("/api/ask", { method: "POST", body: { ticker: s.ticker, question: q, history: hist.slice(0, -1) } });
+    $("#chatSend").disabled = false;
+    if (r.error) { hist.pop(); toast({ level: "warning", title: "לא התקבלה תשובה", body: r.error }); }
+    else hist.push({ role: "assistant", text: r.answer, provider: r.provider });
+    if (state.stock?.ticker !== s.ticker) return;
+    log.innerHTML = hist.length ? hist.map(chatMsgHTML).join("") : "";
+    log.scrollTop = log.scrollHeight;
+    $("#chatInput").focus();
+  };
+  $("#chatForm").onsubmit = (e) => { e.preventDefault(); send($("#chatInput").value); };
+  $$(".chat-sugg [data-q]").forEach((b) => b.onclick = () => send(b.dataset.q));
 }
 
 function drawPriceChart(s) {
@@ -1065,6 +1178,13 @@ $("#btnScan").onclick = async () => {
   if (state.cloud) setTimeout(() => $("#btnScan").classList.remove("busy"), 120000);
 };
 $("#btnSettings").onclick = () => state.d && settingsModal();
+$("#searchForm").onsubmit = (e) => {
+  e.preventDefault();
+  const t = $("#searchInput").value.trim();
+  if (!t) return;
+  $("#searchInput").blur();
+  openStock(t);
+};
 $("#btnMe").onclick = () => state.d && settingsModal("account");
 $("#btnAddHolding").onclick = () => holdingForm();
 $("#btnAddWatch").onclick = () => watchForm();
