@@ -71,44 +71,121 @@ BRIEF_SCHEMA = """{
 
 
 # ------------------------------------------------------------------ providers
-def _call_gemini(prompt: str) -> str:
-    url = f"https://generativelanguage.googleapis.com/v1beta/models/{settings.GEMINI_MODEL}:generateContent"
+# Fallback chain inside Gemini: when a model is overloaded (503) or out of quota (429, quotas are per
+# model), the next one is tried. Lite has its own, larger free quota.
+GEMINI_FALLBACKS = ["gemini-flash-latest", "gemini-flash-lite-latest"]
+# Preferred Groq/OpenRouter models, newest first. If the configured model has been retired (404),
+# the first one the account can actually use is picked automatically.
+PREFERRED_MODELS = {
+    "groq": ["openai/gpt-oss-120b", "meta-llama/llama-4-maverick-17b-128e-instruct", "llama-3.3-70b-versatile",
+             "meta-llama/llama-4-scout-17b-16e-instruct", "qwen/qwen3-32b", "openai/gpt-oss-20b", "llama-3.1-8b-instant"],
+}
+_SKIP_MODEL = re.compile(r"whisper|guard|tts|orpheus|playai|distil|embed|vision|compound|prompt", re.I)
+_model_override: dict[str, str] = {}
+
+
+def _count_request() -> None:
+    """Every HTTP request counts toward the provider quota and the user's budget."""
+    global calls, budget
+    calls += 1
+    if budget is not None:
+        budget -= 1
+
+
+def _err_message(r: requests.Response) -> str:
+    try:
+        e = r.json().get("error")
+        if isinstance(e, dict):
+            return str(e.get("message") or e)[:160]
+        return str(e or r.text)[:160]
+    except ValueError:
+        return r.text[:160]
+
+
+def _call_gemini(prompt: str) -> tuple[str, str]:
+    models = list(dict.fromkeys([m.strip() for m in settings.GEMINI_MODEL.split(",") if m.strip()] + GEMINI_FALLBACKS))
     body = {
         "systemInstruction": {"parts": [{"text": SYSTEM_PROMPT}]},
         "contents": [{"role": "user", "parts": [{"text": prompt}]}],
         # newer Flash models "think" before answering and those tokens count toward this limit
         "generationConfig": {"temperature": 0.3, "responseMimeType": "application/json", "maxOutputTokens": 4096},
     }
-    # key in a header, not the URL, so it can never show up in error messages or logs
-    r = requests.post(url, headers={"x-goog-api-key": settings.GEMINI_API_KEY}, json=body, timeout=90)
-    _raise(r, "gemini")
-    data = r.json()
-    cands = data.get("candidates") or []
-    if not cands:
-        reason = (data.get("promptFeedback") or {}).get("blockReason") or "no candidates"
-        raise RuntimeError(f"gemini returned no answer ({reason})")
-    parts = (cands[0].get("content") or {}).get("parts") or []
-    text = "".join(p.get("text", "") for p in parts if not p.get("thought"))
-    if not text:
-        raise RuntimeError(f"gemini returned empty text (finishReason={cands[0].get('finishReason')})")
-    return text
+    problems = []
+    for i, model in enumerate(models):
+        if budget is not None and budget <= 0:
+            break
+        url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
+        _count_request()
+        # key in a header, not the URL, so it can never show up in error messages or logs
+        r = requests.post(url, headers={"x-goog-api-key": settings.GEMINI_API_KEY}, json=body, timeout=90)
+        if r.status_code in (404, 429, 500, 502, 503, 504):
+            problems.append(f"{model}: HTTP {r.status_code} {_err_message(r)}")
+            if i + 1 < len(models):
+                time.sleep(2)
+            continue
+        _raise(r, "gemini")
+        data = r.json()
+        cands = data.get("candidates") or []
+        if not cands:
+            reason = (data.get("promptFeedback") or {}).get("blockReason") or "no candidates"
+            problems.append(f"{model}: no answer ({reason})")
+            continue
+        parts = (cands[0].get("content") or {}).get("parts") or []
+        text = "".join(p.get("text", "") for p in parts if not p.get("thought"))
+        if not text:
+            problems.append(f"{model}: empty text (finishReason={cands[0].get('finishReason')})")
+            continue
+        return text, model
+    if problems and all("HTTP 429" in p for p in problems):
+        _cooldown["gemini"] = time.time() + 600
+    raise RuntimeError(" | ".join(problems) or "gemini: no model available")
 
 
-def _call_openai_compatible(base: str, key: str, model: str, prompt: str, name: str, json_mode: bool = True) -> str:
-    body = {
-        "model": model,
-        "temperature": 0.3,
-        "max_tokens": 1200,
-        "messages": [{"role": "system", "content": SYSTEM_PROMPT}, {"role": "user", "content": prompt}],
-    }
-    if json_mode:
-        body["response_format"] = {"type": "json_object"}
-    headers = {"Authorization": f"Bearer {key}", "Content-Type": "application/json"}
-    if name == "openrouter":
-        headers["X-Title"] = "Trading Radar"
-    r = requests.post(f"{base}/chat/completions", json=body, headers=headers, timeout=60)
-    _raise(r, name)
-    return r.json()["choices"][0]["message"]["content"]
+def _discover_model(base: str, key: str, name: str, current: str) -> str | None:
+    """Ask the provider which models this key can use and pick the best replacement."""
+    try:
+        r = requests.get(f"{base}/models", headers={"Authorization": f"Bearer {key}"}, timeout=20)
+        if not r.ok:
+            return None
+        ids = [m["id"] for m in r.json().get("data", []) if m.get("active", True) and m.get("id")]
+    except Exception:  # noqa: BLE001
+        return None
+    usable = [i for i in ids if not _SKIP_MODEL.search(i) and i != current]
+    for pref in PREFERRED_MODELS.get(name, []):
+        if pref in usable:
+            return pref
+    return usable[0] if usable else None
+
+
+def _call_openai_compatible(base: str, key: str, model: str, prompt: str, name: str, json_mode: bool = True) -> tuple[str, str]:
+    model = _model_override.get(name, model)
+    for attempt in range(3):
+        body = {
+            "model": model,
+            "temperature": 0.3,
+            "max_tokens": 4096,  # reasoning models spend part of this on thinking
+            "messages": [{"role": "system", "content": SYSTEM_PROMPT}, {"role": "user", "content": prompt}],
+        }
+        if json_mode:
+            body["response_format"] = {"type": "json_object"}
+        headers = {"Authorization": f"Bearer {key}", "Content-Type": "application/json"}
+        if name == "openrouter":
+            headers["X-Title"] = "Trading Radar"
+        _count_request()
+        r = requests.post(f"{base}/chat/completions", json=body, headers=headers, timeout=90)
+        msg = _err_message(r) if not r.ok else ""
+        if r.status_code == 404 or (r.status_code == 400 and ("decommission" in msg or "model_not_found" in r.text)):
+            replacement = _discover_model(base, key, name, model)
+            if replacement and attempt < 2:
+                log.warning("%s model %s unavailable, switching to %s", name, model, replacement)
+                _model_override[name] = model = replacement
+                continue
+        if r.status_code == 400 and json_mode and "response_format" in msg:
+            json_mode = False  # this model doesn't support JSON mode – ask for JSON in the prompt only
+            continue
+        _raise(r, name)
+        return r.json()["choices"][0]["message"]["content"] or "", model
+    raise RuntimeError(f"{name}: no usable model ({msg})")
 
 
 def _call_ollama(prompt: str) -> str:
@@ -118,13 +195,13 @@ def _call_ollama(prompt: str) -> str:
         "options": {"temperature": 0.3},
     })
     _raise(r, "ollama")
-    return r.json()["message"]["content"]
+    return r.json()["message"]["content"], settings.OLLAMA_MODEL
 
 
 def _redact(text: str) -> str:
     """Remove any API key from an error message before it is logged or shown."""
     for key in (settings.GEMINI_API_KEY, settings.GROQ_API_KEY, settings.OPENROUTER_API_KEY):
-        if key:
+        if key and len(key) >= 8:
             text = text.replace(key, "***")
     return re.sub(r"(key=)[^&\s'\"]+", r"\1***", text)
 
@@ -136,7 +213,7 @@ def _raise(r: requests.Response, name: str) -> None:
         _cooldown[name] = time.time() + min(wait, 3600)
         raise RuntimeError(f"{name} rate-limited")
     if r.status_code >= 400:
-        raise RuntimeError(f"{name} HTTP {r.status_code}: {r.text[:200]}")
+        raise RuntimeError(f"{name} HTTP {r.status_code}: {_err_message(r)}")
 
 
 def _available() -> list[str]:
@@ -155,7 +232,7 @@ def _available() -> list[str]:
 
 def complete_json(prompt: str) -> tuple[dict | None, str]:
     """Try providers in order. Returns (parsed_json | None, provider_name)."""
-    global budget, calls, last_ok
+    global last_ok
     for name in _available():
         if budget is not None and budget <= 0:
             break
@@ -166,24 +243,18 @@ def complete_json(prompt: str) -> tuple[dict | None, str]:
             if gap > 0:
                 time.sleep(gap)
             _last_call[name] = time.time()
-            calls += 1  # every request counts toward the provider's quota, even a failed one
-            if budget is not None:
-                budget -= 1
         try:
             if name == "gemini":
-                text = _call_gemini(prompt)
-                model = settings.GEMINI_MODEL
+                text, model = _call_gemini(prompt)
             elif name == "groq":
-                text = _call_openai_compatible("https://api.groq.com/openai/v1", settings.GROQ_API_KEY,
-                                               settings.GROQ_MODEL, prompt, name)
-                model = settings.GROQ_MODEL
+                text, model = _call_openai_compatible("https://api.groq.com/openai/v1", settings.GROQ_API_KEY,
+                                                      settings.GROQ_MODEL, prompt, name)
             elif name == "openrouter":
-                text = _call_openai_compatible("https://openrouter.ai/api/v1", settings.OPENROUTER_API_KEY,
-                                               settings.OPENROUTER_MODEL, prompt, name, json_mode=False)
-                model = settings.OPENROUTER_MODEL
+                text, model = _call_openai_compatible("https://openrouter.ai/api/v1", settings.OPENROUTER_API_KEY,
+                                                      settings.OPENROUTER_MODEL, prompt, name, json_mode=False)
             else:
-                text = _call_ollama(prompt)
-                model = settings.OLLAMA_MODEL
+                _count_request()
+                text, model = _call_ollama(prompt)
             parsed = extract_json(text)
             if parsed is not None:
                 last_ok = f"{name}:{model}"
@@ -195,8 +266,8 @@ def complete_json(prompt: str) -> tuple[dict | None, str]:
             msg = _redact(str(exc))
             last_errors[name] = msg[:200]
             log.warning("LLM %s failed: %s", name, msg)
-            if "rate-limited" not in str(exc):
-                _cooldown[name] = time.time() + 300
+            if "rate-limited" not in str(exc) and _cooldown.get(name, 0) < time.time():
+                _cooldown[name] = time.time() + 180  # skip this provider briefly; the next one is tried now
     return None, "rules"
 
 

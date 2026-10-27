@@ -70,9 +70,9 @@ class Settings:
     # --- free LLM providers (tried in order, falls back to rules if none work) ---
     LLM_PROVIDERS = [p.strip() for p in _env("LLM_PROVIDERS", "gemini,groq,openrouter,ollama").split(",") if p.strip()]
     GEMINI_API_KEY = _env("GEMINI_API_KEY")
-    GEMINI_MODEL = _env("GEMINI_MODEL", "gemini-flash-latest")
+    GEMINI_MODEL = _env("GEMINI_MODEL", "gemini-flash-latest")  # falls back to flash-lite when busy
     GROQ_API_KEY = _env("GROQ_API_KEY")
-    GROQ_MODEL = _env("GROQ_MODEL", "llama-3.3-70b-versatile")
+    GROQ_MODEL = _env("GROQ_MODEL", "openai/gpt-oss-120b")  # auto-replaced if retired
     OPENROUTER_API_KEY = _env("OPENROUTER_API_KEY")
     OPENROUTER_MODEL = _env("OPENROUTER_MODEL", "meta-llama/llama-3.3-70b-instruct:free")
     OLLAMA_URL = _env("OLLAMA_URL")  # e.g. http://ollama:11434
