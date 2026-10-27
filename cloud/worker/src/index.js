@@ -47,8 +47,11 @@ function checkAuth(request, env) {
   const h = request.headers.get("authorization") || "";
   if (h.startsWith("Basic ")) {
     try {
-      const [u, ...rest] = atob(h.slice(6)).split(":");
-      if (safeEq(u, env.DASHBOARD_USER || "admin") && safeEq(rest.join(":"), env.DASHBOARD_PASSWORD)) return null;
+      // decode as UTF-8 so Hebrew/emoji passwords work; ignore stray spaces and username case
+      const bytes = Uint8Array.from(atob(h.slice(6).trim()), (c) => c.charCodeAt(0));
+      const [u, ...rest] = new TextDecoder().decode(bytes).split(":");
+      const userOk = safeEq(u.trim().toLowerCase(), String(env.DASHBOARD_USER || "admin").trim().toLowerCase());
+      if (userOk && safeEq(rest.join(":").trim(), String(env.DASHBOARD_PASSWORD).trim())) return null;
     } catch (e) { /* fallthrough */ }
   }
   return new Response("Authentication required", { status: 401, headers: { "WWW-Authenticate": 'Basic realm="Trading Radar"' } });
