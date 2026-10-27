@@ -73,7 +73,8 @@ BRIEF_SCHEMA = """{
 # ------------------------------------------------------------------ providers
 # Fallback chain inside Gemini: when a model is overloaded (503) or out of quota (429, quotas are per
 # model), the next one is tried. Lite has its own, larger free quota.
-GEMINI_FALLBACKS = ["gemini-flash-latest", "gemini-flash-lite-latest"]
+# gemini-3.5-flash is deprecated but still forwarded by Google to a newer Flash, so it stays as a fallback
+GEMINI_FALLBACKS = ["gemini-flash-latest", "gemini-3.5-flash", "gemini-flash-lite-latest"]
 # Preferred Groq/OpenRouter models, newest first. If the configured model has been retired (404),
 # the first one the account can actually use is picked automatically.
 PREFERRED_MODELS = {
