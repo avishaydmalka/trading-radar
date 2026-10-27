@@ -102,8 +102,37 @@ def _err_message(r: requests.Response) -> str:
         return r.text[:160]
 
 
+_gemini_discovered: list[str] | None = None
+
+
+def _newest_gemini_flash() -> list[str]:
+    """Ask Google which models this key can use and return the newest stable Flash models first
+    (e.g. gemini-3.6-flash before gemini-3.5-flash). Cached for the run."""
+    global _gemini_discovered
+    if _gemini_discovered is not None:
+        return _gemini_discovered
+    _gemini_discovered = []
+    try:
+        r = requests.get("https://generativelanguage.googleapis.com/v1beta/models", params={"pageSize": 200},
+                         headers={"x-goog-api-key": settings.GEMINI_API_KEY}, timeout=20)
+        if r.ok:
+            found = []
+            for m in r.json().get("models", []):
+                name = m.get("name", "").removeprefix("models/")
+                hit = re.fullmatch(r"gemini-(\d+(?:\.\d+)?)-flash", name)  # stable Flash only (no lite/preview)
+                if hit and "generateContent" in m.get("supportedGenerationMethods", ["generateContent"]):
+                    found.append((float(hit.group(1)), name))
+            _gemini_discovered = [n for _, n in sorted(found, reverse=True)[:2]]
+    except Exception:  # noqa: BLE001
+        pass
+    return _gemini_discovered
+
+
 def _call_gemini(prompt: str) -> tuple[str, str]:
-    models = list(dict.fromkeys([m.strip() for m in settings.GEMINI_MODEL.split(",") if m.strip()] + GEMINI_FALLBACKS))
+    configured = [m.strip() for m in settings.GEMINI_MODEL.split(",") if m.strip()]
+    if not configured or "auto" in configured:
+        configured = [m for m in configured if m != "auto"] + _newest_gemini_flash()
+    models = list(dict.fromkeys(configured + GEMINI_FALLBACKS))
     body = {
         "systemInstruction": {"parts": [{"text": SYSTEM_PROMPT}]},
         "contents": [{"role": "user", "parts": [{"text": prompt}]}],

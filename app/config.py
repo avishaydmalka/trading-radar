@@ -70,7 +70,7 @@ class Settings:
     # --- free LLM providers (tried in order, falls back to rules if none work) ---
     LLM_PROVIDERS = [p.strip() for p in _env("LLM_PROVIDERS", "gemini,groq,openrouter,ollama").split(",") if p.strip()]
     GEMINI_API_KEY = _env("GEMINI_API_KEY")
-    GEMINI_MODEL = _env("GEMINI_MODEL", "gemini-flash-latest")  # falls back to flash-lite when busy
+    GEMINI_MODEL = _env("GEMINI_MODEL", "auto")  # auto = newest stable Flash your key can use; then flash-latest, flash-lite
     GROQ_API_KEY = _env("GROQ_API_KEY")
     GROQ_MODEL = _env("GROQ_MODEL", "openai/gpt-oss-120b")  # auto-replaced if retired
     OPENROUTER_API_KEY = _env("OPENROUTER_API_KEY")
