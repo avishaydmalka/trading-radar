@@ -258,7 +258,7 @@ a { color: var(--accent); text-decoration: none; }
 .strength { height: 6px; border-radius: 3px; background: var(--card-2); direction: ltr; }
 .strength div { height: 100%; border-radius: 3px; }
 .bt-controls { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin-bottom: 10px; }
-select, input[type=text], input[type=number], input[type=date] { background: var(--bg); border: 1px solid var(--line-2); border-radius: 9px; padding: 7px 10px; min-width: 0; }
+select, input[type=text], input[type=number], input[type=date], input[type=password] { background: var(--bg); border: 1px solid var(--line-2); border-radius: 9px; padding: 7px 10px; min-width: 0; }
 .bt-chart { height: 220px; direction: ltr; }
 table.t { width: 100%; border-collapse: collapse; font-size: 12.5px; }
 table.t th, table.t td { padding: 6px 8px; border-bottom: 1px solid var(--line); text-align: right; }
@@ -315,3 +315,30 @@ table.t td.num { text-align: left; }
   .opp .plan { grid-template-columns: repeat(2, 1fr); }
   .card { padding: 14px; }
 }
+
+/* ---------------- multi-user: login + account */
+.avatar { display: inline-grid; place-items: center; border-radius: 50%; background: var(--av); color: #fff; font-weight: 700; flex: none; box-shadow: 0 0 0 2px var(--bg); }
+.me-btn { display: inline-flex; align-items: center; gap: 8px; padding: 4px 10px 4px 6px; }
+.me-btn .lbl { max-width: 110px; overflow: hidden; text-overflow: ellipsis; }
+.login { position: fixed; inset: 0; z-index: 90; display: grid; place-items: center; padding: 24px 16px;
+  background: radial-gradient(900px 500px at 70% -10%, #142247 0%, transparent 60%), var(--bg); overflow: auto; }
+.login-card { width: min(440px, 100%); background: linear-gradient(180deg, var(--card), var(--bg-2)); border: 1px solid var(--line); border-radius: 20px;
+  padding: 26px 20px; display: grid; gap: 16px; box-shadow: var(--shadow); }
+.login-q { text-align: center; color: var(--text-2); font-size: 15px; }
+.login-tabs { display: flex; flex-wrap: wrap; gap: 10px; justify-content: center; }
+.login-tab { display: grid; justify-items: center; gap: 6px; min-width: 92px; padding: 12px 10px; border-radius: 14px; border: 1px solid var(--line);
+  background: var(--bg); cursor: pointer; color: var(--text-2); font-weight: 600; transition: .15s; }
+.login-tab:hover { border-color: var(--line-2); }
+.login-tab.on { border-color: var(--accent); color: var(--text); background: var(--card-2); box-shadow: 0 0 0 3px rgba(34,211,238,.15); }
+.login-tab:focus-visible, .login-pw input:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.login-tab span:last-child { max-width: 100px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.login-pw { display: grid; gap: 6px; font-size: 13px; color: var(--text-2); }
+.login-pw input { padding: 11px 12px; font-size: 16px; }
+.login-err { min-height: 18px; color: #ffb4b4; font-size: 13px; text-align: center; }
+.login-card .btn.primary { padding: 11px; font-size: 15px; }
+.kpi.welcome { grid-column: 1 / -1; display: grid; gap: 10px; padding: 18px; }
+.kpi.welcome .k-l { font-size: 16px; color: var(--text); font-weight: 700; }
+.kpi.welcome .k-s { font-family: inherit; direction: rtl; text-align: right; font-size: 14px; }
+.user-row { grid-template-columns: 1fr auto auto; }
+.inline-pw { grid-template-columns: 1fr auto auto; }
+@media (max-width: 680px) { .me-btn .lbl { display: none; } .me-btn { padding: 4px; } }

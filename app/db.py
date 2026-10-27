@@ -117,6 +117,23 @@ def conn() -> sqlite3.Connection:
     return _conn
 
 
+def use(path: str) -> None:
+    """Switch to another SQLite file (one per user in the cloud runner)."""
+    global _conn
+    with _lock:
+        if _conn is not None:
+            _conn.commit()
+            _conn.close()
+        _conn = None
+        settings.DB_PATH = path
+
+
+def checkpoint() -> None:
+    with _lock:
+        conn().commit()
+        conn().execute("PRAGMA wal_checkpoint(TRUNCATE)")
+
+
 def execute(sql: str, params: tuple | list = ()) -> sqlite3.Cursor:
     with _lock:
         cur = conn().execute(sql, params)

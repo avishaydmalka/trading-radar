@@ -126,74 +126,147 @@ def ensure_vapid(kv: KV) -> dict:
     return keys
 
 
+# ------------------------------------------------------------------ users
+def load_users(kv: KV) -> list[dict]:
+    """Users live in KV (managed from the dashboard). First run: migrate the single-user keys to 'admin'."""
+    users = kv.get_json("users")
+    if users:
+        return users
+    users = [{"id": "admin", "name": "מנהל", "is_admin": True, "color": 0}]
+    for key in ("config", "dashboard", "stocks", "db", "push_subs"):
+        raw = kv.get(key)
+        if raw and kv.get(f"{key}:admin") is None:
+            kv.put(f"{key}:admin", raw)
+    kv.put_json("users", users)
+    log.info("created users list (admin)")
+    return users
+
+
+def share_fetches(all_tickers: list[str]) -> None:
+    """Fetch prices/news/social once per run and reuse them for every user."""
+    from app.data import news, prices
+
+    hist = prices.get_history(sorted(set(all_tickers)))
+    orig_get_history = prices.get_history
+    prices.get_history = lambda tickers, *a, **k: (
+        {t: hist[t] for t in tickers if t in hist} if set(tickers) <= set(hist) else orig_get_history(tickers, *a, **k))
+
+    def memo(fn):
+        cache = {}
+
+        def wrapper(*args):
+            key = json.dumps(args, sort_keys=True, default=str)
+            if key not in cache:
+                cache[key] = fn(*args)
+            return cache[key]
+        return wrapper
+
+    for name in ("ticker_news", "social", "market_news", "influencer_news", "congress_trades"):
+        setattr(news, name, memo(getattr(news, name)))
+    prices.get_fundamentals = memo(prices.get_fundamentals)
+
+
 # ------------------------------------------------------------------ main
-def main() -> int:
-    t0 = time.time()
-    kv = KV()
-
-    raw_db = kv.get("db")
-    if raw_db:
-        Path(os.environ["DB_PATH"]).write_bytes(raw_db)
-
+def scan_user(kv: KV, user: dict, force: bool, vapid: dict, public_url: str) -> dict:
     from app import db, engine
-    from app.analysis import backtest
     from app.config import settings
-    from app.data import prices
     from app.main import dashboard_payload
 
+    uid = user["id"]
+    path = str(WORK / f"radar-{uid}.db")
+    raw_db = kv.get(f"db:{uid}")
+    Path(path).unlink(missing_ok=True)
+    if raw_db:
+        Path(path).write_bytes(raw_db)
+    db.use(path)
     db.init()
-    cfg = kv.get_json("config")
-    if cfg:
-        apply_config(db, cfg)
-    else:
-        kv.put_json("config", config_from_db(db))  # first run: seeded from config/portfolio.yaml
-        log.info("seeded portfolio config")
+    cfg = kv.get_json(f"config:{uid}")
+    if cfg is None:
+        cfg = config_from_db(db) if user.get("is_admin") else {"holdings": [], "watchlist": [], "risk": dict(db.DEFAULT_RISK), "feeds": db.get_feeds()}
+        kv.put_json(f"config:{uid}", cfg)
+    apply_config(db, cfg)
 
-    vapid = ensure_vapid(kv)
     settings.VAPID_PUBLIC_KEY, settings.VAPID_PRIVATE_KEY = vapid["public"], vapid["private"]
-    public_url = (kv.get("public_url") or b"").decode().strip()
     if public_url:
         settings.PUBLIC_URL = public_url
+    # each person gets alerts in their own Telegram chat
+    settings.TELEGRAM_CHAT_ID = str(user.get("telegram_chat_id") or (os.environ.get("TELEGRAM_CHAT_ID", "").strip() if user.get("is_admin") else ""))
 
-    subs = kv.get_json("push_subs") or []
+    subs = kv.get_json(f"push_subs:{uid}") or []
     db.execute("DELETE FROM push_subs")
     for s in subs:
         if s.get("endpoint"):
             db.add_push_sub(s)
 
     st = json.loads(db.kv_get("engine_state") or "{}")
-    for k in ("last_news", "last_brief", "scans"):
-        if k in st:
-            engine.state[k] = st[k]
+    engine.state.update({"last_news": 0.0, "last_brief": 0.0, "scans": 0})
+    engine.state.update({k: st[k] for k in ("last_news", "last_brief", "scans") if k in st})
 
-    force = os.environ.get("FORCE_LLM") == "1"
     result = engine.run_scan(force_llm=force)
-    log.info("scan: %s", {k: v for k, v in result.items() if k != "error"})
-    if result.get("status") == "error":
-        log.error("scan error: %s", result.get("error"))
-
     db.kv_set("engine_state", json.dumps({k: engine.state[k] for k in ("last_news", "last_brief", "scans")}))
 
-    # ---- publish to KV
     dash = dashboard_payload()
-    dash["mode"] = "cloud"
-    dash["generated"] = time.time()
+    dash.update({"mode": "cloud", "generated": time.time(), "user": {"id": uid, "name": user.get("name")}})
     dash["status"]["next_scan"] = None
     dash["features"]["webpush"] = True
-    kv.put_json("dashboard", dash)
+    kv.put_json(f"dashboard:{uid}", dash)
 
-    snaps = db.all_snapshots()
     stocks = {}
-    for t, s in snaps.items():
+    for t, s in db.all_snapshots().items():
         s["news_items"] = db.list_news(t, limit=25)
         s["alerts"] = db.list_alerts(15, ticker=t)
         stocks[t] = s
-    kv.put("stocks", bundle(stocks))
+    kv.put(f"stocks:{uid}", bundle(stocks))
 
-    # backtests: once a day, or when the ticker list changed
-    meta = json.loads(db.kv_get("backtest_meta") or "{}")
-    tickers = sorted(snaps)
-    if time.time() - meta.get("ts", 0) > 20 * 3600 or meta.get("tickers") != tickers or force:
+    alive = db.list_push_subs()
+    if len(alive) != len(subs):
+        kv.put_json(f"push_subs:{uid}", alive)
+
+    if engine.state["scans"] % 20 == 0:
+        db.execute("VACUUM")
+    db.checkpoint()
+    kv.put(f"db:{uid}", Path(path).read_bytes())
+    return {**result, "tickers_list": sorted(stocks)}
+
+
+def main() -> int:
+    t0 = time.time()
+    kv = KV()
+    from app import db  # noqa: F401  (imports settings with DB_PATH set above)
+    from app.analysis import backtest
+    from app.data import prices
+
+    users = load_users(kv)
+    configs = {u["id"]: kv.get_json(f"config:{u['id']}") or {} for u in users}
+    all_tickers = sorted({h["ticker"] for c in configs.values() for h in c.get("holdings") or []}
+                         | {w["ticker"] for c in configs.values() for w in c.get("watchlist") or []})
+    from app.engine import INDEX_TICKERS
+    share_fetches(all_tickers + list(INDEX_TICKERS))
+
+    vapid = ensure_vapid(kv)
+    public_url = (kv.get("public_url") or b"").decode().strip()
+    force = os.environ.get("FORCE_LLM") == "1"
+    only = os.environ.get("ONLY_USER", "").strip()
+
+    failures, scanned = 0, set()
+    for u in users:
+        if only and u["id"] != only:
+            continue
+        try:
+            r = scan_user(kv, u, force, vapid, public_url)
+            scanned.update(r.get("tickers_list", []))
+            log.info("user %s: %s", u["id"], {k: v for k, v in r.items() if k in ("status", "tickers", "alerts", "llm_calls")})
+            if r.get("status") == "error":
+                failures += 1
+                log.error("scan error (%s): %s", u["id"], r.get("error"))
+        except Exception:  # noqa: BLE001
+            failures += 1
+            log.exception("user %s failed", u["id"])
+
+    # backtests depend only on the ticker, so they are shared – once a day or when tickers change
+    meta = kv.get_json("backtests_meta") or {}
+    tickers = sorted(scanned)
+    if tickers and (time.time() - meta.get("ts", 0) > 20 * 3600 or not set(tickers) <= set(meta.get("tickers", [])) or force):
         bts = {}
         for t in tickers:
             try:
@@ -202,19 +275,10 @@ def main() -> int:
             except Exception as exc:  # noqa: BLE001
                 log.warning("backtest %s failed: %s", t, exc)
         kv.put("backtests", bundle(bts))
-        db.kv_set("backtest_meta", json.dumps({"ts": time.time(), "tickers": tickers}))
+        kv.put_json("backtests_meta", {"ts": time.time(), "tickers": tickers})
 
-    # push subs may have shrunk (expired phones)
-    alive = db.list_push_subs()
-    if len(alive) != len(subs):
-        kv.put_json("push_subs", alive)
-
-    db.execute("VACUUM") if engine.state["scans"] % 20 == 0 else None
-    db.conn().commit()
-    db.conn().execute("PRAGMA wal_checkpoint(TRUNCATE)")
-    kv.put("db", Path(os.environ["DB_PATH"]).read_bytes())
-    log.info("done in %.1fs", time.time() - t0)
-    return 0 if result.get("status") != "error" else 1
+    log.info("done: %d users in %.1fs", len(users), time.time() - t0)
+    return 1 if failures and failures == len([u for u in users if not only or u["id"] == only]) else 0
 
 
 if __name__ == "__main__":

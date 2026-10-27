@@ -29,6 +29,7 @@ async function api(path, opts = {}) {
   });
   const data = await res.json().catch(() => ({}));
   if (!res.ok && !data.error) data.error = `HTTP ${res.status}`;
+  if (res.status === 401 && path !== "/api/login") { showLogin(); data.__auth = false; }
   return data;
 }
 
@@ -74,14 +75,29 @@ function spark(vals, w = 120, h = 30) {
 }
 
 /* ------------------------------------------------------------------ load + render */
+function showSections(on) {
+  $$("main > section").forEach((sec, i) => { if (i > 0) sec.hidden = !on; });
+}
+
 async function load() {
   const d = await api("/api/dashboard");
+  if (d.__auth === false) return;
+  renderMe(d.me);
   if (d && d.empty) {
-    $("#scanInfo").textContent = "ממתין לסריקה הראשונה…";
-    $("#kpis").innerHTML = `<div class="kpi" style="grid-column:1/-1"><div class="k-l">⏳ הסריקה הראשונה עוד לא הסתיימה</div><div class="k-s muted">ב-GitHub: Actions ← scan ← Run workflow. הדשבורד יתמלא אוטומטית תוך כ-2 דקות.</div></div>`;
+    state.cloud = true;
+    state.d = { ...d, holdings: [], opportunities: [], alerts: [], news: [], portfolio: { base: "USD", baskets: [], rows: [], warnings: [] }, status: d.status || {} };
+    $("#scanInfo").textContent = d.has_portfolio ? "הסריקה הראשונה של התיק שלך בדרך…" : "התיק ריק";
+    showSections(false);
+    $("#kpis").innerHTML = d.has_portfolio
+      ? `<div class="kpi welcome"><div class="k-l">⏳ הסריקה הראשונה של התיק שלך בדרך</div><div class="k-s muted">התוצאות יופיעו כאן לבד תוך כמה דקות. אפשר להמשיך להוסיף מניות בינתיים.</div>
+          <div class="row gap"><button class="btn small" onclick="holdingForm()">＋ פוזיציה</button><button class="btn small" onclick="watchForm()">＋ מעקב</button></div></div>`
+      : `<div class="kpi welcome"><div class="k-l">👋 ${d.me ? `שלום ${esc(d.me.name)}, ` : ""}בוא נבנה את התיק שלך</div>
+          <div class="k-s muted">הוסף את המניות שאתה מחזיק (כמות, מחיר ממוצע וסטופ) ומניות למעקב. המערכת תסרוק אותן ותתריע לך על הזדמנויות ועל זמן למכור.</div>
+          <div class="row gap"><button class="btn primary" onclick="holdingForm()">＋ פוזיציה ראשונה</button><button class="btn" onclick="watchForm()">＋ מניה למעקב</button></div></div>`;
     return;
   }
   if (!d || !d.portfolio) return;
+  showSections(true);
   state.cloud = d.mode === "cloud";
   if (state.cloud && state.d) {
     const seen = state.lastAlertTs || 0;
@@ -120,7 +136,7 @@ function renderStatus(s) {
     <span class="mkt ${m.tase}"><i></i>ת״א · ${name[m.tase] || "—"}</span>`;
   const last = s.last_scan ? new Date(s.last_scan * 1000).toLocaleTimeString("he-IL", { hour: "2-digit", minute: "2-digit" }) : "—";
   if (state.cloud) {
-    $("#scanInfo").textContent = `עודכן ${ago(s.last_scan)} (${last}) · סריקה כל 20 ד׳ בשעות מסחר` + (s.last_error ? " · ⚠ שגיאה" : "");
+    $("#scanInfo").textContent = `עודכן ${ago(s.last_scan)} (${last})` + (s.last_error ? " · ⚠ שגיאה" : "");
     return;
   }
   const next = s.next_scan ? Math.max(0, Math.round((s.next_scan - Date.now() / 1000) / 60)) : null;
@@ -409,6 +425,64 @@ function renderCongress() {
   }).join("") : `<div class="empty">לא נמצאו דיווחים אחרונים</div>`;
 }
 
+/* ------------------------------------------------------------------ login (multi-user cloud mode) */
+const AVATAR = ["#3987e5", "#d95926", "#199e70", "#c98500", "#d55181", "#9085e9", "#e66767", "#008300"];
+const avatar = (u, size = 34) => `<span class="avatar" style="--av:${AVATAR[(u.color ?? 0) % 8]};width:${size}px;height:${size}px;font-size:${Math.round(size * 0.45)}px">${esc((u.name || "?").trim().charAt(0))}</span>`;
+const lsGet = (k) => { try { return localStorage.getItem(k); } catch (e) { return null; } };
+const lsSet = (k, v) => { try { localStorage.setItem(k, v); } catch (e) { /* private mode */ } };
+
+let loginShown = false;
+async function showLogin() {
+  if (loginShown) return;
+  loginShown = true;
+  const users = await fetch("/api/users/public").then((r) => r.json()).catch(() => []);
+  let sel = users.find((u) => u.id === lsGet("radar_uid"))?.id || users[0]?.id;
+  const el = document.createElement("div");
+  el.className = "login";
+  el.id = "login";
+  const draw = () => {
+    el.innerHTML = `<form class="login-card" id="loginForm">
+      <div class="brand" style="justify-content:center"><svg class="brand-mark" viewBox="0 0 32 32" aria-hidden="true"><circle cx="16" cy="16" r="14" fill="none" stroke="currentColor" stroke-width="2" opacity=".35"/><circle cx="16" cy="16" r="8" fill="none" stroke="currentColor" stroke-width="2" opacity=".6"/><path d="M16 16 L27 9" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"/><circle cx="23" cy="11" r="2.4" fill="var(--bull)"/></svg><div class="brand-name">רדאר מסחר</div></div>
+      <div class="login-q">מי נכנס?</div>
+      <div class="login-tabs" role="tablist">${users.map((u) => `<button type="button" role="tab" aria-selected="${u.id === sel}" class="login-tab ${u.id === sel ? "on" : ""}" data-uid="${esc(u.id)}">${avatar(u, 44)}<span>${esc(u.name)}</span></button>`).join("")}</div>
+      <label class="login-pw">סיסמה<input type="password" id="loginPw" autocomplete="current-password" required></label>
+      <div class="login-err" id="loginErr" role="alert"></div>
+      <button class="btn primary" id="loginBtn">כניסה</button>
+    </form>`;
+    $$(".login-tab", el).forEach((b) => b.onclick = () => { sel = b.dataset.uid; draw(); $("#loginPw").focus(); });
+    $("#loginForm", el).onsubmit = async (e) => {
+      e.preventDefault();
+      $("#loginBtn").disabled = true;
+      const r = await fetch("/api/login", { method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ uid: sel, password: $("#loginPw").value }) }).then((x) => x.json()).catch(() => ({ error: "אין חיבור" }));
+      $("#loginBtn").disabled = false;
+      if (r.error) { $("#loginErr").textContent = r.error; $("#loginPw").select(); return; }
+      lsSet("radar_uid", sel);
+      el.remove(); loginShown = false; state.d = null;
+      await load();
+      if (state.cloud && !state.poll) state.poll = setInterval(load, 60 * 1000);
+    };
+  };
+  draw();
+  document.body.appendChild(el);
+  setTimeout(() => $("#loginPw")?.focus(), 50);
+}
+
+function renderMe(me) {
+  const b = $("#btnMe");
+  if (!me) { b.hidden = true; return; }
+  b.hidden = false;
+  b.innerHTML = `${avatar(me, 26)}<span class="lbl">${esc(me.name)}</span>`;
+  state.me = me;
+}
+
+async function logout() {
+  await api("/api/logout", { method: "POST" });
+  closeModal();
+  state.d = null;
+  location.reload();
+}
+
 /* ------------------------------------------------------------------ stock drawer */
 async function openStock(ticker) {
   if (!ticker) return;
@@ -691,13 +765,40 @@ function orderForm(s) {
 }
 
 function settingsModal(tab = "risk") {
-  const d = state.d, r = d.risk, f = d.features;
-  const tabs = { risk: "ניהול סיכונים", portfolio: "תיק ומעקב", notify: "התראות", system: "מערכת" };
+  const d = state.d, r = d.risk, f = d.features || {};
+  const me = d.me;
+  const tabs = { risk: "ניהול סיכונים", portfolio: "תיק ומעקב", notify: "התראות" };
+  if (me) tabs.account = "החשבון שלי";
+  if (me?.is_admin) tabs.users = "משתמשים";
+  if (!me || me.is_admin) tabs.system = "מערכת";
+  if (!tabs[tab]) tab = "risk";
   let body = "";
-  if (tab === "risk") {
+  if (tab === "account") {
+    body = `<form class="form" id="meForm">
+      <div class="full row gap">${avatar(me, 44)}<div><b>${esc(me.name)}</b><div class="muted small">${me.is_admin ? "מנהל" : "משתמש"}</div></div></div>
+      <label>שם תצוגה<input type="text" name="name" value="${esc(me.name)}" maxlength="30"></label>
+      <label>מספר צ׳אט בטלגרם<input type="text" name="telegram_chat_id" value="${esc(me.telegram_chat_id)}" inputmode="numeric" dir="ltr" placeholder="למשל 123456789">
+        <span class="hint">${f.telegram_bot ? "שלח /start לבוט של המערכת בטלגרם והדבק כאן את המספר שהוא מחזיר" : "הבוט עוד לא הוגדר – בקש מהמנהל"}</span></label>
+      <div class="full"><button class="btn primary">שמור</button></div>
+    </form>
+    <form class="form" id="pwForm">
+      <div class="full"><b>שינוי סיסמה</b></div>
+      <label>סיסמה נוכחית<input type="password" name="current_password" autocomplete="current-password" required></label>
+      <label>סיסמה חדשה<input type="password" name="new_password" autocomplete="new-password" minlength="4" required></label>
+      <div class="full row gap" style="justify-content:space-between"><button type="button" class="btn danger" id="logoutBtn">התנתק</button><button class="btn primary">עדכן סיסמה</button></div>
+    </form>`;
+  } else if (tab === "users") {
+    body = `<div class="list-edit" id="usersList"><div class="skeleton"></div></div>
+      <form class="form" id="newUser">
+        <div class="full"><b>הוספת משתמש</b><div class="hint">כל משתמש מקבל תיק, התראות ודשבורד משלו. הוא נכנס עם השם והסיסמה שתגדיר כאן.</div></div>
+        <label>שם<input type="text" name="name" maxlength="30" required></label>
+        <label>סיסמה ראשונית<input type="text" name="password" minlength="4" required></label>
+        <div class="full"><button class="btn primary">הוסף משתמש</button></div>
+      </form>`;
+  } else if (tab === "risk") {
     const fld = (k, l, hint) => `<label>${l}<input type="number" step="any" name="${k}" value="${r[k]}"><span class="hint">${hint}</span></label>`;
     body = `<form class="form" id="rForm">
-      ${fld("cash", `מזומן פנוי (${d.portfolio.base})`, "משמש לחישוב גודל פוזיציה")}
+      ${fld("cash", `מזומן פנוי (${d.portfolio?.base || "USD"})`, "משמש לחישוב גודל פוזיציה")}
       ${fld("risk_per_trade_pct", "סיכון לעסקה %", "הפסד מקס׳ אם הסטופ נפגע")}
       ${fld("max_position_pct", "משקל מקס׳ למניה %", "")}
       ${fld("max_basket_pct", "משקל מקס׳ לסל %", "")}
@@ -715,7 +816,7 @@ function settingsModal(tab = "risk") {
   } else if (tab === "notify") {
     const perm = "Notification" in window ? Notification.permission : "unsupported";
     body = `<div class="list-edit">
-      <div class="feat"><span>📱 טלגרם ${f.telegram ? "" : "<div class='hint muted small'>הגדר TELEGRAM_BOT_TOKEN ו-TELEGRAM_CHAT_ID בקובץ .env</div>"}</span><span class="${f.telegram ? "on-dot" : "off-dot"}">${f.telegram ? "● פעיל" : "○ כבוי"}</span></div>
+      <div class="feat"><span>📱 טלגרם ${f.telegram ? "" : `<div class='hint muted small'>${me ? "הכנס את מספר הצ׳אט שלך בלשונית ׳החשבון שלי׳" : "הגדר TELEGRAM_BOT_TOKEN ו-TELEGRAM_CHAT_ID בקובץ .env"}</div>`}</span><span class="${f.telegram ? "on-dot" : "off-dot"}">${f.telegram ? "● פעיל" : "○ כבוי"}</span></div>
       <div class="feat"><span>🔔 התראות דפדפן/טלפון (Push) ${f.webpush ? "" : "<div class='hint muted small'>דורש VAPID keys ו-HTTPS – ראה README</div>"}</span>
         <button class="btn small" id="sPush" ${f.webpush || perm !== "granted" ? "" : ""}>${perm === "granted" ? "הירשם מחדש" : "הפעל"}</button></div>
       <div class="feat"><span>🖥️ התראות בתוך הדשבורד (חי)</span><span class="on-dot">● פעיל</span></div>
@@ -726,8 +827,8 @@ function settingsModal(tab = "risk") {
       ${row("🤖 מודל שפה חינמי", f.llm, f.llm ? `סדר: ${f.llm_providers.join(" → ")}` : "ללא מפתח – ניתוח מבוסס חוקים. הוסף GEMINI_API_KEY או GROQ_API_KEY")}
       ${row("📈 מצב נתוני אמת", !d.demo, d.demo ? "DEMO_MODE=1 – נתונים סינתטיים" : "Yahoo Finance + RSS + StockTwits")}
       ${row("📤 ברוקר Alpaca (Paper)", f.broker, "אופציונלי – פקודות רק באישור ידני")}
-      <div class="feat"><span>⏱️ תדירות סריקה</span><span class="num">${d.status.interval_min} ד׳</span></div>
-      <div class="feat"><span>🔢 סריקות מאז ההפעלה</span><span class="num">${d.status.scans}</span></div>
+      <div class="feat"><span>⏱️ תדירות סריקה</span><span class="num">${state.cloud ? "20" : d.status?.interval_min ?? "—"} ד׳</span></div>
+      <div class="feat"><span>🔢 סריקות</span><span class="num">${d.status?.scans ?? 0}</span></div>
       <button class="btn" id="sLLM" style="margin-top:8px">🤖 סריקה + ניתוח AI מלא עכשיו</button></div>`;
   }
   modal("הגדרות", `<div class="tabs">${Object.entries(tabs).map(([k, v]) => `<button data-tab="${k}" class="${k === tab ? "on" : ""}">${v}</button>`).join("")}</div>${body}`);
@@ -748,6 +849,59 @@ function settingsModal(tab = "risk") {
   if (tab === "notify") {
     $("#sPush").onclick = enablePush;
     $("#sTest").onclick = async () => { const r = await api("/api/notify/test", { method: "POST" }); if (r.ok) toast({ level: "info", title: "נשלח", body: `טלגרם: ${r.telegram ? "✔" : "כבוי"} · Push: ${r.webpush ? "✔" : "כבוי"}` }); };
+  }
+  if (tab === "account") {
+    $("#meForm").onsubmit = async (e) => {
+      e.preventDefault();
+      const r = await api("/api/me", { method: "PUT", body: Object.fromEntries(new FormData(e.target)) });
+      if (r.error) return toast({ level: "warning", title: "שגיאה", body: r.error });
+      state.d.me = r; renderMe(r); toast({ level: "opportunity", title: "נשמר", body: r.telegram_chat_id ? "התראות התיק שלך יגיעו לטלגרם" : "" });
+      settingsModal("account");
+    };
+    $("#pwForm").onsubmit = async (e) => {
+      e.preventDefault();
+      const r = await api("/api/me", { method: "PUT", body: Object.fromEntries(new FormData(e.target)) });
+      if (r.error) return toast({ level: "warning", title: "שגיאה", body: r.error });
+      e.target.reset(); toast({ level: "opportunity", title: "הסיסמה עודכנה" });
+    };
+    $("#logoutBtn").onclick = logout;
+  }
+  if (tab === "users") {
+    const drawUsers = async () => {
+      const list = await api("/api/users");
+      if (list.error) { $("#usersList").innerHTML = `<div class="warn-row">${esc(list.error)}</div>`; return; }
+      $("#usersList").innerHTML = list.map((u) => `<div class="le-row user-row">
+        <span class="row gap">${avatar(u, 30)}<span><b>${esc(u.name)}</b>${u.is_admin ? ` <span class="chip">מנהל</span>` : ""}<div class="muted small">${u.telegram_chat_id ? "📱 טלגרם מחובר" : "ללא טלגרם"}</div></span></span>
+        ${u.is_admin ? "<span></span>" : `<button class="btn small" data-rp="${esc(u.id)}">🔑 סיסמה</button>`}
+        ${u.is_admin ? "<span></span>" : `<button class="btn small danger" data-du="${esc(u.id)}" data-name="${esc(u.name)}">🗑</button>`}</div>`).join("");
+      $$("[data-rp]").forEach((b) => b.onclick = () => {
+        const row = b.closest(".le-row");
+        if ($(".inline-pw", row)) return;
+        row.insertAdjacentHTML("afterend", `<form class="inline-pw le-row"><input type="text" placeholder="סיסמה חדשה" minlength="4" required><button class="btn small primary">שמור</button><span></span></form>`);
+        const form = row.nextElementSibling;
+        $("input", form).focus();
+        form.onsubmit = async (e) => {
+          e.preventDefault();
+          const r = await api(`/api/users/${b.dataset.rp}`, { method: "PUT", body: { password: $("input", form).value } });
+          toast(r.error ? { level: "warning", title: "שגיאה", body: r.error } : { level: "opportunity", title: "הסיסמה עודכנה", body: "שלח למשתמש את הסיסמה החדשה" });
+          form.remove();
+        };
+      });
+      $$("[data-du]").forEach((b) => b.onclick = async () => {
+        if (b.dataset.armed !== "1") { b.dataset.armed = "1"; b.textContent = "למחוק?"; setTimeout(() => { b.dataset.armed = ""; b.textContent = "🗑"; }, 4000); return; }
+        const r = await api(`/api/users/${b.dataset.du}`, { method: "DELETE" });
+        toast(r.error ? { level: "warning", title: "שגיאה", body: r.error } : { level: "info", title: `${b.dataset.name} נמחק` });
+        drawUsers();
+      });
+    };
+    drawUsers();
+    $("#newUser").onsubmit = async (e) => {
+      e.preventDefault();
+      const r = await api("/api/users", { method: "POST", body: Object.fromEntries(new FormData(e.target)) });
+      if (r.error) return toast({ level: "warning", title: "שגיאה", body: r.error });
+      toast({ level: "opportunity", title: `${r.name} נוסף`, body: "שלח לו את הכתובת והסיסמה. בכניסה הראשונה הוא יבנה את התיק שלו." });
+      e.target.reset(); drawUsers();
+    };
   }
   if (tab === "system") $("#sLLM").onclick = async () => { await api("/api/scan?llm=1", { method: "POST" }); closeModal(); toast({ level: "info", title: "סריקה מלאה התחילה", body: "התוצאות יתעדכנו אוטומטית" }); };
 }
@@ -824,6 +978,7 @@ $("#btnScan").onclick = async () => {
   if (state.cloud) setTimeout(() => $("#btnScan").classList.remove("busy"), 120000);
 };
 $("#btnSettings").onclick = () => state.d && settingsModal();
+$("#btnMe").onclick = () => state.d && settingsModal("account");
 $("#btnAddHolding").onclick = () => holdingForm();
 $("#btnAddWatch").onclick = () => watchForm();
 $("#btnBell").onclick = async () => {
@@ -835,7 +990,7 @@ $("#btnBell").onclick = async () => {
 (async function init() {
   if ("serviceWorker" in navigator && !STATIC) navigator.serviceWorker.register("/sw.js").catch(() => {});
   await load();
-  if (state.cloud) setInterval(load, 60 * 1000); else connectStream();
+  if (state.cloud) { if (!state.poll) state.poll = setInterval(load, 60 * 1000); } else if (state.d) connectStream();
   setInterval(() => state.d && renderStatus(state.d.status), 30000);
   if (!STATIC && !state.cloud) setInterval(load, 5 * 60 * 1000);
   const t = new URLSearchParams(location.search).get("ticker");

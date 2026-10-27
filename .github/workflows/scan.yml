@@ -13,6 +13,10 @@ on:
         description: "Full AI analysis for every stock (1/0)"
         required: false
         default: "0"
+      only_user:
+        description: "Scan only this user id (empty = everyone)"
+        required: false
+        default: ""
 
 concurrency:
   group: scan
@@ -45,6 +49,7 @@ jobs:
           BASE_CURRENCY: ${{ vars.BASE_CURRENCY || 'USD' }}
           DEMO_MODE: ${{ vars.DEMO_MODE || '0' }}
           FORCE_LLM: ${{ inputs.force_llm || '0' }}
+          ONLY_USER: ${{ inputs.only_user || '' }}
           NEWS_INTERVAL_MIN: "15"
           LLM_INTERVAL_MIN: "40"
           LLM_MAX_CALLS_PER_SCAN: "6"
