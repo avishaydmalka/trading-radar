@@ -306,6 +306,12 @@ def main() -> int:
     owns = {u["id"]: own_keys(kv, u["id"]) for u in users}
     n_shared = sum(1 for u in users if not owns[u["id"]])
 
+    from app.analysis import llm as _llm
+    llm_state = kv.get_json("llm_state") or {}
+    # start with the Gemini model that answered last time, so busy ones aren't retried every scan
+    if llm_state.get("gemini_good") and time.time() - llm_state.get("ts", 0) < 6 * 3600:
+        _llm._good_gemini = llm_state["gemini_good"]
+
     failures, scanned, ai_report = 0, set(), []
     for u in users:
         if only and u["id"] != only:
@@ -345,6 +351,8 @@ def main() -> int:
         kv.put_json("backtests_meta", {"ts": time.time(), "tickers": tickers})
 
     kv.put_json("llm_usage", usage)
+    if _llm._good_gemini:
+        kv.put_json("llm_state", {"gemini_good": _llm._good_gemini, "ts": time.time()})
     # Put the AI status at the very end of the log and on the run's summary page
     for name, mode, n, status in ai_report:
         log.info("AI [%s] mode=%s requests=%s → %s", name, mode, n, status)

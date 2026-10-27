@@ -33,6 +33,7 @@ def reset(new_budget: int | None = None) -> None:
     """Called when the runner switches to another user's keys."""
     global budget, calls, last_ok
     budget, calls, last_ok = new_budget, 0, None
+    _model_down.clear()
     _cooldown.clear()
     last_errors.clear()
 
@@ -83,6 +84,8 @@ PREFERRED_MODELS = {
 }
 _SKIP_MODEL = re.compile(r"whisper|guard|tts|orpheus|playai|distil|embed|vision|compound|prompt", re.I)
 _model_override: dict[str, str] = {}
+_model_down: dict[str, float] = {}   # model -> skip until (busy / out of quota)
+_good_gemini: str | None = None      # last Gemini model that answered – tried first next time
 
 
 def _count_request() -> None:
@@ -130,10 +133,12 @@ def _newest_gemini_flash() -> list[str]:
 
 
 def _call_gemini(prompt: str) -> tuple[str, str]:
+    global _good_gemini
     configured = [m.strip() for m in settings.GEMINI_MODEL.split(",") if m.strip()]
     if not configured or "auto" in configured:
         configured = [m for m in configured if m != "auto"] + _newest_gemini_flash()
-    models = list(dict.fromkeys(configured + GEMINI_FALLBACKS))
+    models = list(dict.fromkeys(([_good_gemini] if _good_gemini else []) + configured + GEMINI_FALLBACKS))
+    models = [m for m in models if _model_down.get(m, 0) < time.time()] or models[-1:]
     body = {
         "systemInstruction": {"parts": [{"text": SYSTEM_PROMPT}]},
         "contents": [{"role": "user", "parts": [{"text": prompt}]}],
@@ -149,6 +154,8 @@ def _call_gemini(prompt: str) -> tuple[str, str]:
         # key in a header, not the URL, so it can never show up in error messages or logs
         r = requests.post(url, headers={"x-goog-api-key": settings.GEMINI_API_KEY}, json=body, timeout=90)
         if r.status_code in (404, 429, 500, 502, 503, 504):
+            # don't knock on this model again for a while (404 = gone for good this run)
+            _model_down[model] = time.time() + (3600 if r.status_code == 404 else 900 if r.status_code == 429 else 300)
             problems.append(f"{model}: HTTP {r.status_code} {_err_message(r)}")
             if i + 1 < len(models):
                 time.sleep(2)
@@ -165,6 +172,7 @@ def _call_gemini(prompt: str) -> tuple[str, str]:
         if not text:
             problems.append(f"{model}: empty text (finishReason={cands[0].get('finishReason')})")
             continue
+        _good_gemini = model
         return text, model
     if problems and all("HTTP 429" in p for p in problems):
         _cooldown["gemini"] = time.time() + 600
@@ -190,6 +198,8 @@ def _discover_model(base: str, key: str, name: str, current: str) -> str | None:
 def _call_openai_compatible(base: str, key: str, model: str, prompt: str, name: str, json_mode: bool = True) -> tuple[str, str]:
     model = _model_override.get(name, model)
     for attempt in range(3):
+        if budget is not None and budget <= 0:
+            raise RuntimeError(f"{name}: AI budget for this scan used up")
         body = {
             "model": model,
             "temperature": 0.3,

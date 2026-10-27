@@ -18,7 +18,7 @@ from .notify import hub
 log = logging.getLogger("radar.engine")
 
 INDEX_TICKERS = {"SPY": "S&P 500", "QQQ": "נאסד\"ק 100", "^VIX": "VIX פחד", "^TA125.TA": "ת\"א 125"}
-BRIEF_RESERVE = 3  # AI requests kept for the market brief in every scan
+BRIEF_RESERVE = 4  # AI requests kept for the market brief in every scan
 
 ACTION_HE = {"BUY": "קנייה", "ADD": "הגדלה", "HOLD": "החזקה", "WATCH": "מעקב", "TRIM": "מימוש חלקי", "SELL": "מכירה"}
 
@@ -234,6 +234,11 @@ def _scan(force_llm: bool) -> dict:
         return p
 
     llm_calls = 0
+    # set aside requests for the market brief before the stock analyses can use them up
+    held_back = 0
+    if llm.budget is not None:
+        held_back = min(BRIEF_RESERVE, llm.budget)
+        llm.budget -= held_back
     for t in sorted(rows, key=priority, reverse=True):
         r = rows[t]
         prev = prev_snaps.get(t) or {}
@@ -247,8 +252,7 @@ def _scan(force_llm: bool) -> dict:
                "sizing": None if r["holding"] else r["sizing"]}
         # keep a few requests for the market brief: one analysis can take up to 3 requests when a
         # provider is busy and the next one is tried
-        brief_reserve_ok = llm.budget is None or llm.budget > BRIEF_RESERVE
-        if settings.llm_enabled() and due and llm_calls < settings.LLM_MAX_CALLS_PER_SCAN and brief_reserve_ok:
+        if settings.llm_enabled() and due and llm_calls < settings.LLM_MAX_CALLS_PER_SCAN and llm.has_budget():
             r["analysis"] = llm.analyze_stock(ctx)
             r["analysis_ts"] = time.time()
             rb = llm.rule_based_stock(ctx)  # hard exit rules (stop/target/trailing) always win
@@ -265,6 +269,9 @@ def _scan(force_llm: bool) -> dict:
         else:
             r["analysis"] = llm.rule_based_stock(ctx)
             r["analysis_ts"] = time.time()
+
+    if llm.budget is not None:
+        llm.budget += held_back  # now available for the market brief
 
     # ---- save snapshots
     for t, r in rows.items():
