@@ -38,7 +38,7 @@ class KV:
             self.dir = Path(os.environ["KV_DIR"])
             self.dir.mkdir(parents=True, exist_ok=True)
             return
-        acc, ns, tok = os.environ["CF_ACCOUNT_ID"], os.environ["KV_NAMESPACE_ID"], os.environ["CF_API_TOKEN"]
+        acc, ns, tok = ("".join(os.environ[k].split()) for k in ("CF_ACCOUNT_ID", "KV_NAMESPACE_ID", "CF_API_TOKEN"))
         self.base = f"https://api.cloudflare.com/client/v4/accounts/{acc}/storage/kv/namespaces/{ns}"
         self.h = {"Authorization": f"Bearer {tok}"}
 
