@@ -276,7 +276,7 @@ def scan_user(kv: KV, user: dict, force: bool, vapid: dict, public_url: str, llm
         db.execute("VACUUM")
     db.checkpoint()
     kv.put(f"db:{uid}", Path(path).read_bytes())
-    return {**result, "tickers_list": sorted(stocks), "llm_requests": llm.calls}
+    return {**result, "tickers_list": sorted(stocks), "llm_requests": llm.calls, "llm_info": llm_info}
 
 
 def main() -> int:
@@ -305,7 +305,7 @@ def main() -> int:
     owns = {u["id"]: own_keys(kv, u["id"]) for u in users}
     n_shared = sum(1 for u in users if not owns[u["id"]])
 
-    failures, scanned = 0, set()
+    failures, scanned, ai_report = 0, set(), []
     for u in users:
         if only and u["id"] != only:
             continue
@@ -316,6 +316,11 @@ def main() -> int:
                 usage["total"] += r.get("llm_requests", 0)
                 usage["users"][u["id"]] = usage["users"].get(u["id"], 0) + r.get("llm_requests", 0)
             scanned.update(r.get("tickers_list", []))
+            li = r.get("llm_info") or {}
+            status = (f"OK via {li['last_ok']}" if li.get("last_ok") else
+                      f"FAILED – {li['errors']}" if li.get("errors") else
+                      "no AI request this scan (not due yet)" if li.get("mode") != "none" else "no AI key")
+            ai_report.append((u.get("name") or u["id"], li.get("mode"), li.get("requests_this_scan", 0), status))
             log.info("user %s: %s", u["id"], {k: v for k, v in r.items() if k in ("status", "tickers", "alerts", "llm_calls")})
             if r.get("status") == "error":
                 failures += 1
@@ -339,6 +344,16 @@ def main() -> int:
         kv.put_json("backtests_meta", {"ts": time.time(), "tickers": tickers})
 
     kv.put_json("llm_usage", usage)
+    # Put the AI status at the very end of the log and on the run's summary page
+    for name, mode, n, status in ai_report:
+        log.info("AI [%s] mode=%s requests=%s → %s", name, mode, n, status)
+    summary = os.environ.get("GITHUB_STEP_SUMMARY")
+    if summary:
+        with open(summary, "a", encoding="utf-8") as fh:
+            fh.write("### 🤖 AI status\n\n| user | key | requests | result |\n|---|---|---|---|\n")
+            for name, mode, n, status in ai_report:
+                fh.write(f"| {name} | {mode} | {n} | {status} |\n")
+            fh.write(f"\nShared key usage today: **{usage['total']} / {SHARED_DAILY}**\n")
     log.info("done: %d users in %.1fs, shared AI requests today %d/%d", len(users), time.time() - t0, usage["total"], SHARED_DAILY)
     return 1 if failures and failures == len([u for u in users if not only or u["id"] == only]) else 0
 

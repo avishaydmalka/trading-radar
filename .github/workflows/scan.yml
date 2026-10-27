@@ -50,6 +50,7 @@ jobs:
           DEMO_MODE: ${{ vars.DEMO_MODE || '0' }}
           FORCE_LLM: ${{ inputs.force_llm || '0' }}
           ONLY_USER: ${{ inputs.only_user || '' }}
+          PYTHONWARNINGS: "ignore"
           NEWS_INTERVAL_MIN: "15"
           LLM_INTERVAL_MIN: "40"
           LLM_MAX_CALLS_PER_SCAN: "6"
