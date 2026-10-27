@@ -25,13 +25,16 @@ _last_call: dict[str, float] = {}
 # shared free-tier key is split fairly and never pushed past its free quota.
 budget: int | None = None
 calls = 0  # requests sent since the last reset()
+last_errors: dict[str, str] = {}  # provider -> last failure, shown on the dashboard
+last_ok: str | None = None        # provider:model of the last successful answer
 
 
 def reset(new_budget: int | None = None) -> None:
     """Called when the runner switches to another user's keys."""
-    global budget, calls
-    budget, calls = new_budget, 0
+    global budget, calls, last_ok
+    budget, calls, last_ok = new_budget, 0, None
     _cooldown.clear()
+    last_errors.clear()
 
 
 def has_budget() -> bool:
@@ -73,12 +76,22 @@ def _call_gemini(prompt: str) -> str:
     body = {
         "systemInstruction": {"parts": [{"text": SYSTEM_PROMPT}]},
         "contents": [{"role": "user", "parts": [{"text": prompt}]}],
-        "generationConfig": {"temperature": 0.3, "responseMimeType": "application/json", "maxOutputTokens": 1200},
+        # newer Flash models "think" before answering and those tokens count toward this limit
+        "generationConfig": {"temperature": 0.3, "responseMimeType": "application/json", "maxOutputTokens": 4096},
     }
-    r = requests.post(url, params={"key": settings.GEMINI_API_KEY}, json=body, timeout=60)
+    # key in a header, not the URL, so it can never show up in error messages or logs
+    r = requests.post(url, headers={"x-goog-api-key": settings.GEMINI_API_KEY}, json=body, timeout=90)
     _raise(r, "gemini")
-    parts = r.json()["candidates"][0]["content"]["parts"]
-    return "".join(p.get("text", "") for p in parts)
+    data = r.json()
+    cands = data.get("candidates") or []
+    if not cands:
+        reason = (data.get("promptFeedback") or {}).get("blockReason") or "no candidates"
+        raise RuntimeError(f"gemini returned no answer ({reason})")
+    parts = (cands[0].get("content") or {}).get("parts") or []
+    text = "".join(p.get("text", "") for p in parts if not p.get("thought"))
+    if not text:
+        raise RuntimeError(f"gemini returned empty text (finishReason={cands[0].get('finishReason')})")
+    return text
 
 
 def _call_openai_compatible(base: str, key: str, model: str, prompt: str, name: str, json_mode: bool = True) -> str:
@@ -108,6 +121,14 @@ def _call_ollama(prompt: str) -> str:
     return r.json()["message"]["content"]
 
 
+def _redact(text: str) -> str:
+    """Remove any API key from an error message before it is logged or shown."""
+    for key in (settings.GEMINI_API_KEY, settings.GROQ_API_KEY, settings.OPENROUTER_API_KEY):
+        if key:
+            text = text.replace(key, "***")
+    return re.sub(r"(key=)[^&\s'\"]+", r"\1***", text)
+
+
 def _raise(r: requests.Response, name: str) -> None:
     if r.status_code == 429:
         retry = r.headers.get("retry-after")
@@ -134,7 +155,7 @@ def _available() -> list[str]:
 
 def complete_json(prompt: str) -> tuple[dict | None, str]:
     """Try providers in order. Returns (parsed_json | None, provider_name)."""
-    global budget, calls
+    global budget, calls, last_ok
     for name in _available():
         if budget is not None and budget <= 0:
             break
@@ -165,10 +186,15 @@ def complete_json(prompt: str) -> tuple[dict | None, str]:
                 model = settings.OLLAMA_MODEL
             parsed = extract_json(text)
             if parsed is not None:
+                last_ok = f"{name}:{model}"
+                last_errors.pop(name, None)
                 return parsed, f"{name}:{model}"
-            log.warning("%s returned non-JSON", name)
+            last_errors[name] = f"התשובה לא הייתה JSON תקין: {text[:80]!r}"
+            log.warning("%s returned non-JSON: %s", name, text[:200])
         except Exception as exc:  # noqa: BLE001
-            log.warning("LLM %s failed: %s", name, exc)
+            msg = _redact(str(exc))
+            last_errors[name] = msg[:200]
+            log.warning("LLM %s failed: %s", name, msg)
             if "rate-limited" not in str(exc):
                 _cooldown[name] = time.time() + 300
     return None, "rules"

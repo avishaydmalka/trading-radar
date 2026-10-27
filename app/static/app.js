@@ -425,6 +425,12 @@ function renderCongress() {
   }).join("") : `<div class="empty">לא נמצאו דיווחים אחרונים</div>`;
 }
 
+function aiErrorsText(info) {
+  const errs = Object.entries(info?.errors || {});
+  if (!errs.length || info?.last_ok) return "";
+  return `<div class="warn-row" style="margin-top:6px">⚠️ ה‑AI לא ענה בסריקה האחרונה – ${errs.map(([p, e]) => `${esc(p)}: ${esc(e)}`).join(" · ")}</div>`;
+}
+
 function aiStatusText(info) {
   if (!info) return "";
   if (info.mode === "own") return `✅ הניתוח שלך רץ על המפתח שלך (${(info.providers || []).join(", ")})`;
@@ -805,7 +811,7 @@ function settingsModal(tab = "risk") {
     </form>
     <form class="form" id="llmForm">
       <div class="full"><b>🤖 מפתחות AI אישיים</b>
-        <div class="hint" id="llmStatus">${aiStatusText(d.llm)}</div>
+        <div class="hint" id="llmStatus">${aiStatusText(d.llm)}</div>${aiErrorsText(d.llm)}
         <div class="hint">עם מפתח משלך הניתוח רץ על המכסה החינמית שלך, בלי הגבלה יומית מהמערכת. בלי מפתח – משתמשים במפתח המשותף עד המכסה היומית שלך, ואחריה בניתוח מבוסס חוקים.</div></div>
       <label>Gemini <a class="hint" href="https://aistudio.google.com/apikey" target="_blank" rel="noopener">קבל מפתח חינמי ↗</a>
         <input type="password" name="gemini" autocomplete="off" dir="ltr" placeholder="טוען…"></label>
@@ -866,7 +872,7 @@ function settingsModal(tab = "risk") {
       ${row("📤 ברוקר Alpaca (Paper)", f.broker, "אופציונלי – פקודות רק באישור ידני")}
       <div class="feat"><span>⏱️ תדירות סריקה</span><span class="num">${state.cloud ? "20" : d.status?.interval_min ?? "—"} ד׳</span></div>
       <div class="feat"><span>🔢 סריקות</span><span class="num">${d.status?.scans ?? 0}</span></div>
-      ${d.llm ? `<div class="feat"><span>🤖 AI בחשבון שלך<div class="hint muted small">${aiStatusText(d.llm)}</div></span><span></span></div>` : ""}
+      ${d.llm ? `<div class="feat"><span>🤖 AI בחשבון שלך<div class="hint muted small">${aiStatusText(d.llm)}${d.llm.last_ok ? ` · עובד דרך ${esc(d.llm.last_ok.split(":")[0])}` : ""}</div>${aiErrorsText(d.llm)}</span><span></span></div>` : ""}
       ${me?.is_admin ? `<div class="feat" id="sharedUsage"><span>🔑 מפתח משותף – שימוש היום</span><span class="num">…</span></div>` : ""}
       <button class="btn" id="sLLM" style="margin-top:8px">🤖 סריקה + ניתוח AI מלא עכשיו</button></div>`;
   }

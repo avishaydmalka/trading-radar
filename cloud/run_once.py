@@ -21,7 +21,11 @@ from pathlib import Path
 WORK = Path(os.environ.get("RADAR_WORKDIR") or tempfile.mkdtemp(prefix="radar-"))
 os.environ["DB_PATH"] = str(WORK / "radar.db")
 
+import warnings  # noqa: E402
+
 import requests  # noqa: E402
+
+warnings.filterwarnings("ignore")  # library deprecation noise hides the useful lines in the Actions log
 
 logging.basicConfig(level=logging.WARNING, format="%(levelname)s %(name)s: %(message)s")
 log = logging.getLogger("radar.cloud")
@@ -249,6 +253,9 @@ def scan_user(kv: KV, user: dict, force: bool, vapid: dict, public_url: str, llm
     from app.analysis import llm
     if llm_info["mode"] == "shared":
         llm_info = {**llm_info, "used_today": llm_info["used_today"] + llm.calls}
+    llm_info = {**llm_info, "requests_this_scan": llm.calls, "last_ok": llm.last_ok, "errors": dict(llm.last_errors)}
+    if llm.last_errors:
+        log.warning("AI problems for %s: %s", uid, llm.last_errors)
     dash.update({"mode": "cloud", "generated": time.time(), "user": {"id": uid, "name": user.get("name")}, "llm": llm_info})
     dash["status"]["next_scan"] = None
     dash["features"]["webpush"] = True
