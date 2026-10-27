@@ -33,6 +33,8 @@ export default {
     if (path.startsWith("/static/")) path = path.slice(7); // HTML references /static/…
     try {
       if (path.startsWith("/telegram/")) return await telegramWebhook(request, env, ctx, path.split("/")[2]);
+      if (path === "/auth/google") return await googleStart(request, env, url);
+      if (path === "/auth/google/callback") return await googleCallback(request, env, url);
       if (path.startsWith("/api/")) {
         if (PUBLIC_API.includes(path)) return await publicApi(request, env, url, path);
         const user = await sessionUser(request, env);
@@ -129,7 +131,12 @@ async function publicApi(request, env, url, path) {
   if (path === "/api/health") return json({ ok: true });
   if (path === "/api/users/public") {
     const users = await getUsers(env);
-    return json(users.map((u) => ({ id: u.id, name: u.name, color: u.color ?? 0 })));
+    return json({
+      google_enabled: googleEnabled(env),
+      // google: this person signs in with Google (only when Google sign-in is configured)
+      users: users.map((u) => ({ id: u.id, name: u.name, color: u.color ?? 0,
+        google: googleEnabled(env) && !!u.google_email, password: !(googleEnabled(env) && u.google_email) || !!u.is_admin })),
+    });
   }
   if (path === "/api/logout") return json({ ok: true }, 200, { "set-cookie": cookie("", 0) });
   if (path === "/api/login" && request.method === "POST") {
@@ -143,6 +150,9 @@ async function publicApi(request, env, url, path) {
     const fails = await kvJSON(env, failKey, { n: 0, ts: 0 });
     if (fails.n >= 8 && Date.now() - fails.ts < 15 * 60 * 1000) {
       return json({ error: "יותר מדי ניסיונות. נסה שוב בעוד 15 דקות." }, 429);
+    }
+    if (googleEnabled(env) && user.google_email && !user.is_admin) {
+      return json({ error: "המשתמש הזה נכנס עם Google – לחץ 'המשך עם Google'" }, 400);
     }
     let ok = false;
     if (user.pw && user.pw.hash) {
@@ -162,7 +172,56 @@ async function publicApi(request, env, url, path) {
   return json({ error: "not found" }, 404);
 }
 
-const publicUser = (u) => ({ id: u.id, name: u.name, is_admin: !!u.is_admin, color: u.color ?? 0, telegram_chat_id: u.telegram_chat_id || "" });
+const publicUser = (u) => ({ id: u.id, name: u.name, is_admin: !!u.is_admin, color: u.color ?? 0, telegram_chat_id: u.telegram_chat_id || "", google_email: u.google_email || "" });
+
+/* ------------------------------------------------------------------ Google sign-in (OAuth 2.0 / OpenID Connect) */
+const googleEnabled = (env) => !!(clean(env.GOOGLE_CLIENT_ID) && clean(env.GOOGLE_CLIENT_SECRET));
+const normEmail = (e) => clean(e).toLowerCase();
+const isEmail = (e) => /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(e);
+const loginRedirect = (origin, err) => new Response(null, { status: 302,
+  headers: { location: `${origin}/${err ? `?login_error=${encodeURIComponent(err)}` : ""}`, "set-cookie": "g_state=; Path=/auth; Max-Age=0; HttpOnly; Secure; SameSite=Lax" } });
+
+async function googleStart(request, env, url) {
+  if (!googleEnabled(env)) return loginRedirect(url.origin, "כניסה עם Google לא הוגדרה");
+  const state = b64u(crypto.getRandomValues(new Uint8Array(18)));
+  const params = new URLSearchParams({
+    client_id: clean(env.GOOGLE_CLIENT_ID), redirect_uri: `${url.origin}/auth/google/callback`, response_type: "code",
+    scope: "openid email", state, prompt: "select_account",
+  });
+  return new Response(null, { status: 302, headers: {
+    location: `https://accounts.google.com/o/oauth2/v2/auth?${params}`,
+    "set-cookie": `g_state=${state}; Path=/auth; Max-Age=600; HttpOnly; Secure; SameSite=Lax`,
+  } });
+}
+
+async function googleCallback(request, env, url) {
+  const origin = url.origin;
+  if (!googleEnabled(env)) return loginRedirect(origin, "כניסה עם Google לא הוגדרה");
+  if (url.searchParams.get("error")) return loginRedirect(origin, "הכניסה עם Google בוטלה");
+  const state = (request.headers.get("cookie") || "").match(/(?:^|;\s*)g_state=([^;]+)/)?.[1];
+  if (!state || state !== url.searchParams.get("state")) return loginRedirect(origin, "פג תוקף הכניסה – נסה שוב");
+  const r = await fetch("https://oauth2.googleapis.com/token", {
+    method: "POST", headers: { "content-type": "application/x-www-form-urlencoded" },
+    body: new URLSearchParams({ code: url.searchParams.get("code") || "", client_id: clean(env.GOOGLE_CLIENT_ID),
+      client_secret: clean(env.GOOGLE_CLIENT_SECRET), redirect_uri: `${origin}/auth/google/callback`, grant_type: "authorization_code" }),
+  });
+  const tok = await r.json().catch(() => ({}));
+  if (!r.ok || !tok.id_token) return loginRedirect(origin, "Google דחה את הכניסה (בדוק Client ID/Secret וכתובת החזרה)");
+  // The ID token came straight from Google's token endpoint over TLS, so its claims can be trusted
+  // without a signature check (OpenID Connect Core §3.1.3.7); we still validate audience, issuer and expiry.
+  let claims;
+  try { claims = JSON.parse(new TextDecoder().decode(fromB64u(tok.id_token.split(".")[1]))); } catch (e) { claims = {}; }
+  const okIss = ["https://accounts.google.com", "accounts.google.com"].includes(claims.iss);
+  if (!okIss || claims.aud !== clean(env.GOOGLE_CLIENT_ID) || claims.exp * 1000 < Date.now() || claims.email_verified !== true) {
+    return loginRedirect(origin, "אימות Google נכשל");
+  }
+  const email = normEmail(claims.email);
+  const user = (await getUsers(env)).find((u) => normEmail(u.google_email) === email);
+  if (!user) return loginRedirect(origin, `${email} לא מורשה. בקש מהמנהל להוסיף את המייל שלך.`);
+  const res = loginRedirect(origin, "");
+  res.headers.append("set-cookie", cookie(await makeSession(env, user.id), SESSION_DAYS * 86400));
+  return res;
+}
 
 /* ------------------------------------------------------------------ API (logged in) */
 async function api(request, env, ctx, url, path, user) {
@@ -228,18 +287,24 @@ async function api(request, env, ctx, url, path, user) {
     if (!user.is_admin) return json({ error: "רק המנהל יכול לנהל משתמשים" }, 403);
     const users = await getUsers(env);
     if (path === "/api/users" && m === "GET") {
-      return json(users.map((u) => ({ ...publicUser(u), has_password: !!(u.pw && u.pw.hash) || !!u.is_admin })));
+      return json({ google_enabled: googleEnabled(env),
+        users: users.map((u) => ({ ...publicUser(u), has_password: !!(u.pw && u.pw.hash) || !!u.is_admin })) });
     }
     if (path === "/api/users" && m === "POST") {
       const name = clean(body.name).slice(0, 30);
       const password = clean(body.password);
-      if (!name || password.length < 4) return json({ error: "שם וסיסמה של לפחות 4 תווים" }, 400);
+      const gmail = normEmail(body.google_email);
+      if (gmail && !isEmail(gmail)) return json({ error: "כתובת המייל לא תקינה" }, 400);
+      if (gmail && users.some((u) => normEmail(u.google_email) === gmail)) return json({ error: "המייל הזה כבר משויך למשתמש אחר" }, 400);
+      if (!name) return json({ error: "חובה: שם" }, 400);
+      if (!gmail && password.length < 4) return json({ error: "צריך מייל Google או סיסמה של לפחות 4 תווים" }, 400);
       if (users.length >= 8) return json({ error: "מקסימום 8 משתמשים בגרסה החינמית" }, 400);
       if (users.some((u) => u.name === name)) return json({ error: "כבר יש משתמש בשם הזה" }, 400);
       const id = "u" + b64u(crypto.getRandomValues(new Uint8Array(4))).toLowerCase().replace(/[^a-z0-9]/g, "").slice(0, 6);
       const used = new Set(users.map((u) => u.color ?? 0));
       const color = [0, 1, 2, 3, 4, 5, 6, 7].find((c) => !used.has(c)) ?? users.length % 8;
-      users.push({ id, name, is_admin: false, color, telegram_chat_id: "", pw: { ...(await hashPassword(password)), changed: 0 } });
+      users.push({ id, name, is_admin: false, color, telegram_chat_id: "", google_email: gmail,
+        pw: password.length >= 4 ? { ...(await hashPassword(password)), changed: 0 } : null });
       await putJSON(env, "users", users);
       await putJSON(env, `config:${id}`, { holdings: [], watchlist: [], risk: { ...DEFAULT_RISK }, feeds: {} });
       return json({ id, name });
@@ -249,6 +314,13 @@ async function api(request, env, ctx, url, path, user) {
     if (!target) return json({ error: "משתמש לא נמצא" }, 404);
     if (m === "PUT") {
       if (body.name && clean(body.name)) target.name = clean(body.name).slice(0, 30);
+      if (body.google_email !== undefined) {
+        const gmail = normEmail(body.google_email);
+        if (gmail && !isEmail(gmail)) return json({ error: "כתובת המייל לא תקינה" }, 400);
+        if (gmail && users.some((u) => u.id !== target.id && normEmail(u.google_email) === gmail)) return json({ error: "המייל הזה כבר משויך למשתמש אחר" }, 400);
+        if (!gmail && !target.is_admin && !(target.pw && target.pw.hash)) return json({ error: "למשתמש אין סיסמה – הגדר סיסמה לפני הסרת המייל" }, 400);
+        target.google_email = gmail;
+      }
       if (body.password) {
         if (target.is_admin && !target.pw) return json({ error: "את סיסמת המנהל משנים ב-GitHub Secrets או ב'חשבון'" }, 400);
         if (clean(body.password).length < 4) return json({ error: "סיסמה של לפחות 4 תווים" }, 400);

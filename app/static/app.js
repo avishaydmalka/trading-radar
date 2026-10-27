@@ -443,23 +443,37 @@ let loginShown = false;
 async function showLogin() {
   if (loginShown) return;
   loginShown = true;
-  const users = await fetch("/api/users/public").then((r) => r.json()).catch(() => []);
+  const info = await fetch("/api/users/public").then((r) => r.json()).catch(() => ({}));
+  const users = Array.isArray(info) ? info : info.users || [];
+  const googleOn = !!info.google_enabled;
+  const urlErr = new URLSearchParams(location.search).get("login_error");
+  if (urlErr) history.replaceState(null, "", location.pathname);
   let sel = users.find((u) => u.id === lsGet("radar_uid"))?.id || users[0]?.id;
+  const gBtn = (label = "המשך עם Google") => `<a class="btn google-btn" href="/auth/google">
+      <svg viewBox="0 0 48 48" width="18" height="18" aria-hidden="true"><path fill="#FFC107" d="M43.6 20.5H42V20H24v8h11.3C33.7 32.7 29.2 36 24 36c-6.6 0-12-5.4-12-12s5.4-12 12-12c3.1 0 5.8 1.2 7.9 3.1l5.7-5.7C34 6.1 29.3 4 24 4 12.9 4 4 12.9 4 24s8.9 20 20 20 20-8.9 20-20c0-1.3-.1-2.4-.4-3.5z"/><path fill="#FF3D00" d="m6.3 14.7 6.6 4.8C14.7 15.1 19 12 24 12c3.1 0 5.8 1.2 7.9 3.1l5.7-5.7C34 6.1 29.3 4 24 4 16.3 4 9.7 8.3 6.3 14.7z"/><path fill="#4CAF50" d="M24 44c5.2 0 9.9-2 13.4-5.2l-6.2-5.2C29.2 35.1 26.7 36 24 36c-5.2 0-9.6-3.3-11.3-7.9l-6.5 5C9.5 39.6 16.2 44 24 44z"/><path fill="#1976D2" d="M43.6 20.5H42V20H24v8h11.3c-.8 2.2-2.2 4.2-4.1 5.6l6.2 5.2C37 39.2 44 34 44 24c0-1.3-.1-2.4-.4-3.5z"/></svg>
+      <span>${label}</span></a>`;
   const el = document.createElement("div");
   el.className = "login";
   el.id = "login";
   const draw = () => {
     el.innerHTML = `<form class="login-card" id="loginForm">
       <div class="brand" style="justify-content:center"><svg class="brand-mark" viewBox="0 0 32 32" aria-hidden="true"><circle cx="16" cy="16" r="14" fill="none" stroke="currentColor" stroke-width="2" opacity=".35"/><circle cx="16" cy="16" r="8" fill="none" stroke="currentColor" stroke-width="2" opacity=".6"/><path d="M16 16 L27 9" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"/><circle cx="23" cy="11" r="2.4" fill="var(--bull)"/></svg><div class="brand-name">רדאר מסחר</div></div>
-      <div class="login-q">מי נכנס?</div>
-      <div class="login-tabs" role="tablist">${users.map((u) => `<button type="button" role="tab" aria-selected="${u.id === sel}" class="login-tab ${u.id === sel ? "on" : ""}" data-uid="${esc(u.id)}">${avatar(u, 44)}<span>${esc(u.name)}</span></button>`).join("")}</div>
-      <label class="login-pw">סיסמה<input type="password" id="loginPw" autocomplete="current-password" required></label>
-      <div class="login-err" id="loginErr" role="alert"></div>
-      <button class="btn primary" id="loginBtn">כניסה</button>
+      ${(() => { const cur = users.find((x) => x.id === sel) || {}; return googleOn && !(cur.google && !cur.password)
+        ? `${gBtn()}<div class="login-or"><span>או בחר משתמש</span></div>` : `<div class="login-q">מי נכנס?</div>`; })()}
+      <div class="login-tabs" role="tablist">${users.map((u) => `<button type="button" role="tab" aria-selected="${u.id === sel}" class="login-tab ${u.id === sel ? "on" : ""}" data-uid="${esc(u.id)}">${avatar(u, 44)}<span>${esc(u.name)}</span>${u.google ? `<small class="g-tag">Google</small>` : ""}</button>`).join("")}</div>
+      ${(() => {
+        const u = users.find((x) => x.id === sel) || {};
+        if (u.google && !u.password) return `<div class="login-q">${esc(u.name)} נכנס עם חשבון Google</div>${gBtn(`המשך עם Google`)}<div class="login-err" id="loginErr" role="alert">${esc(urlErr || "")}</div>`;
+        return `<label class="login-pw">סיסמה${u.google ? ` <span class="hint">(גיבוי למנהל)</span>` : ""}<input type="password" id="loginPw" autocomplete="current-password" required></label>
+          <div class="login-err" id="loginErr" role="alert">${esc(urlErr || "")}</div>
+          <button class="btn primary" id="loginBtn">כניסה</button>`;
+      })()}
     </form>`;
-    $$(".login-tab", el).forEach((b) => b.onclick = () => { sel = b.dataset.uid; draw(); $("#loginPw").focus(); });
+    $$(".login-tab", el).forEach((b) => b.onclick = () => { sel = b.dataset.uid; draw(); $("#loginPw")?.focus(); });
+    $$(".google-btn", el).forEach((a) => a.onclick = () => lsSet("radar_uid", sel));
     $("#loginForm", el).onsubmit = async (e) => {
       e.preventDefault();
+      if (!$("#loginPw")) return;
       $("#loginBtn").disabled = true;
       const r = await fetch("/api/login", { method: "POST", headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ uid: sel, password: $("#loginPw").value }) }).then((x) => x.json()).catch(() => ({ error: "אין חיבור" }));
@@ -783,7 +797,7 @@ function settingsModal(tab = "risk") {
   let body = "";
   if (tab === "account") {
     body = `<form class="form" id="meForm">
-      <div class="full row gap">${avatar(me, 44)}<div><b>${esc(me.name)}</b><div class="muted small">${me.is_admin ? "מנהל" : "משתמש"}</div></div></div>
+      <div class="full row gap">${avatar(me, 44)}<div><b>${esc(me.name)}</b><div class="muted small">${me.is_admin ? "מנהל" : "משתמש"}${me.google_email ? ` · 🔐 ${esc(me.google_email)}` : ""}</div></div></div>
       <label>שם תצוגה<input type="text" name="name" value="${esc(me.name)}" maxlength="30"></label>
       <label>מספר צ׳אט בטלגרם<input type="text" name="telegram_chat_id" value="${esc(me.telegram_chat_id)}" inputmode="numeric" dir="ltr" placeholder="למשל 123456789">
         <span class="hint">${f.telegram_bot ? "שלח /start לבוט של המערכת בטלגרם והדבק כאן את המספר שהוא מחזיר" : "הבוט עוד לא הוגדר – בקש מהמנהל"}</span></label>
@@ -812,8 +826,10 @@ function settingsModal(tab = "risk") {
     body = `<div class="list-edit" id="usersList"><div class="skeleton"></div></div>
       <form class="form" id="newUser">
         <div class="full"><b>הוספת משתמש</b><div class="hint">כל משתמש מקבל תיק, התראות ודשבורד משלו. הוא נכנס עם השם והסיסמה שתגדיר כאן.</div></div>
+        <div class="full hint" id="gHint"></div>
         <label>שם<input type="text" name="name" maxlength="30" required></label>
-        <label>סיסמה ראשונית<input type="text" name="password" minlength="4" required></label>
+        <label id="gEmailNew" hidden>מייל Google (רשות)<input type="email" name="google_email" dir="ltr" placeholder="name@gmail.com"></label>
+        <label class="full">סיסמה ראשונית<input type="text" name="password" minlength="4" placeholder="לא חובה אם הוזן מייל Google"></label>
         <div class="full"><button class="btn primary">הוסף משתמש</button></div>
       </form>`;
   } else if (tab === "risk") {
@@ -911,12 +927,31 @@ function settingsModal(tab = "risk") {
   }
   if (tab === "users") {
     const drawUsers = async () => {
-      const list = await api("/api/users");
-      if (list.error) { $("#usersList").innerHTML = `<div class="warn-row">${esc(list.error)}</div>`; return; }
+      const res = await api("/api/users");
+      if (res.error) { $("#usersList").innerHTML = `<div class="warn-row">${esc(res.error)}</div>`; return; }
+      const list = Array.isArray(res) ? res : res.users;
+      const gOn = !!res.google_enabled;
+      $("#gEmailNew").hidden = false;
+      $("#gHint").innerHTML = gOn ? "✅ כניסה עם Google פעילה. משתמש עם מייל Google נכנס רק דרך Google; בלי מייל – עם סיסמה."
+        : "ℹ️ כניסה עם Google עוד לא הוגדרה (GOOGLE_CLIENT_ID / GOOGLE_CLIENT_SECRET). אפשר כבר לשמור מיילים – הם יופעלו כשתגדיר.";
       $("#usersList").innerHTML = list.map((u) => `<div class="le-row user-row">
-        <span class="row gap">${avatar(u, 30)}<span><b>${esc(u.name)}</b>${u.is_admin ? ` <span class="chip">מנהל</span>` : ""}<div class="muted small">${u.telegram_chat_id ? "📱 טלגרם מחובר" : "ללא טלגרם"}</div></span></span>
-        ${u.is_admin ? "<span></span>" : `<button class="btn small" data-rp="${esc(u.id)}">🔑 סיסמה</button>`}
-        ${u.is_admin ? "<span></span>" : `<button class="btn small danger" data-du="${esc(u.id)}" data-name="${esc(u.name)}">🗑</button>`}</div>`).join("");
+        <span class="row gap">${avatar(u, 30)}<span><b>${esc(u.name)}</b>${u.is_admin ? ` <span class="chip">מנהל</span>` : ""}
+          <div class="muted small">${u.google_email ? `🔐 ${esc(u.google_email)}` : "🔑 סיסמה"} · ${u.telegram_chat_id ? "📱 טלגרם" : "ללא טלגרם"}</div></span></span>
+        <button class="btn small" data-ge="${esc(u.id)}" data-cur="${esc(u.google_email)}">✉️ Google</button>
+        ${u.is_admin ? `<span></span><span></span>` : `<button class="btn small" data-rp="${esc(u.id)}">🔑 סיסמה</button><button class="btn small danger" data-du="${esc(u.id)}" data-name="${esc(u.name)}">🗑</button>`}</div>`).join("");
+      $$("[data-ge]").forEach((b) => b.onclick = () => {
+        const row = b.closest(".le-row");
+        if ($(".inline-pw", row.parentElement) && row.nextElementSibling?.classList.contains("inline-pw")) return;
+        row.insertAdjacentHTML("afterend", `<form class="inline-pw le-row"><input type="email" dir="ltr" placeholder="name@gmail.com (ריק = הסר)" value="${esc(b.dataset.cur)}"><button class="btn small primary">שמור</button><span></span></form>`);
+        const form = row.nextElementSibling;
+        $("input", form).focus();
+        form.onsubmit = async (e) => {
+          e.preventDefault();
+          const r = await api(`/api/users/${b.dataset.ge}`, { method: "PUT", body: { google_email: $("input", form).value } });
+          toast(r.error ? { level: "warning", title: "שגיאה", body: r.error } : { level: "opportunity", title: "נשמר", body: r.google_email ? `${r.name} ייכנס עם ${r.google_email}` : `${r.name} ייכנס עם סיסמה` });
+          drawUsers();
+        };
+      });
       $$("[data-rp]").forEach((b) => b.onclick = () => {
         const row = b.closest(".le-row");
         if ($(".inline-pw", row)) return;

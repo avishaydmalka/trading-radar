@@ -342,3 +342,15 @@ table.t td.num { text-align: left; }
 .user-row { grid-template-columns: 1fr auto auto; }
 .inline-pw { grid-template-columns: 1fr auto auto; }
 @media (max-width: 680px) { .me-btn .lbl { display: none; } .me-btn { padding: 4px; } }
+
+/* ---------------- Google sign-in */
+.google-btn { display: flex; align-items: center; justify-content: center; gap: 10px; padding: 11px; background: #fff; color: #1f1f1f;
+  border-color: #dadce0; font-size: 15px; text-decoration: none; }
+.google-btn:hover { border-color: var(--accent); background: #f8fafc; }
+.login-or { display: flex; align-items: center; gap: 10px; color: var(--muted); font-size: 12.5px; }
+.login-or::before, .login-or::after { content: ""; flex: 1; height: 1px; background: var(--line); }
+.g-tag { font-size: 10.5px; color: var(--muted); }
+.user-row { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.user-row > span:first-child { flex: 1 1 220px; min-width: 0; }
+.user-row .muted { overflow-wrap: anywhere; }
+input[type=email] { background: var(--bg); border: 1px solid var(--line-2); border-radius: 9px; padding: 7px 10px; min-width: 0; }
