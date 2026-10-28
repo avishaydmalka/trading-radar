@@ -255,6 +255,12 @@ def scan_user(kv: KV, user: dict, force: bool, vapid: dict, public_url: str, llm
     if llm_info["mode"] == "shared":
         llm_info = {**llm_info, "used_today": llm_info["used_today"] + llm.calls}
     llm_info = {**llm_info, "requests_this_scan": llm.calls, "last_ok": llm.last_ok, "errors": dict(llm.last_errors)}
+    from app import translate
+    if translate.last_error:
+        llm_info["errors"]["תרגום לעברית"] = translate.last_error
+        log.warning("translation problem for %s: %s", uid, translate.last_error)
+    else:
+        log.info("translation ok for %s (%d requests)", uid, translate.ok_count)
     if llm.last_errors:
         log.warning("AI problems for %s: %s", uid, llm.last_errors)
     dash.update({"mode": "cloud", "generated": time.time(), "user": {"id": uid, "name": user.get("name")}, "llm": llm_info})

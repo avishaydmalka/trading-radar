@@ -20,6 +20,8 @@ _MAX_CHARS = 1800
 _HEB = re.compile(r"[֐-׿]")
 _LATIN_WORD = re.compile(r"[A-Za-z][a-z]{2,}")  # real words, not tickers like NVDA / TEVA.TA
 _failed = False  # stop trying for the rest of the run after a network failure
+last_error = ""
+ok_count = 0
 
 GRADES = {
     "strong buy": "קנייה חזקה", "buy": "קנייה", "outperform": "תשואת יתר", "overweight": "משקל יתר",
@@ -56,7 +58,7 @@ def _key(text: str) -> str:
 
 
 def _google(chunk: list[str]) -> list[str] | None:
-    global _failed
+    global _failed, last_error, ok_count
     if _failed:
         return None
     try:
@@ -65,12 +67,14 @@ def _google(chunk: list[str]) -> list[str] | None:
             raise RuntimeError(f"HTTP {r.status_code}")
         out = "".join(seg[0] for seg in r.json()[0] if seg and seg[0])
         parts = [p.strip() for p in out.split(_SEP)]
+        ok_count += 1
         if len(parts) != len(chunk):  # lines got merged – translate one by one instead
             return None if len(chunk) == 1 else [(_google([c]) or [c])[0] for c in chunk]
         return parts
     except Exception as exc:  # noqa: BLE001
         log.warning("translate failed: %s", exc)
         _failed = True
+        last_error = str(exc)[:160]
         return None
 
 
