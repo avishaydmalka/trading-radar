@@ -355,6 +355,10 @@ def mark_alerts_read() -> None:
 
 
 # ---------------------------------------------------------------- news
+def news_exists(news_id: str) -> bool:
+    return bool(query_one("SELECT 1 AS x FROM news WHERE id=?", (news_id,)))
+
+
 def upsert_news(item: dict) -> bool:
     """Returns True if the item is new."""
     if query_one("SELECT 1 AS x FROM news WHERE id=?", (item["id"],)):

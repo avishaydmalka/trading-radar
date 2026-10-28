@@ -157,6 +157,8 @@ def signals_from(extras: dict, price: float | None) -> list[dict]:
     if not extras:
         return out
 
+    from ..translate import grade as _grade
+
     def sig(code, d, s, title, desc):
         out.append({"code": code, "cat": "analyst", "dir": d, "strength": round(s, 2), "title": title, "desc": desc})
 
@@ -166,11 +168,11 @@ def signals_from(extras: dict, price: float | None) -> list[dict]:
     if ups:
         c = ups[0]
         sig("analyst_upgrade", 1, min(0.8, 0.5 + 0.1 * len(ups)), f"שדרוג אנליסט ({c.get('firm')})",
-            f"{c.get('firm')} שדרג ל‑{c.get('to')}" + (f", מחיר יעד {c['target']:.2f}" if c.get("target") else "") + f" ({c['date']}).")
+            f"{c.get('firm')} שדרג ל‑{_grade(c.get('to'))}" + (f", מחיר יעד {c['target']:.2f}" if c.get("target") else "") + f" ({c['date']}).")
     if downs:
         c = downs[0]
         sig("analyst_downgrade", -1, min(0.8, 0.5 + 0.1 * len(downs)), f"הורדת דירוג ({c.get('firm')})",
-            f"{c.get('firm')} הוריד ל‑{c.get('to')}" + (f", מחיר יעד {c['target']:.2f}" if c.get("target") else "") + f" ({c['date']}).")
+            f"{c.get('firm')} הוריד ל‑{_grade(c.get('to'))}" + (f", מחיר יעד {c['target']:.2f}" if c.get("target") else "") + f" ({c['date']}).")
     tm = (extras.get("analyst") or {}).get("target_mean")
     if tm and price:
         upside = (tm / price - 1) * 100

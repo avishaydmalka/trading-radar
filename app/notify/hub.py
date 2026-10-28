@@ -58,6 +58,13 @@ def send_alert(alert: dict, dedupe_key: str | None = None, cooldown_hours: float
         if db.alert_recently_sent(dedupe_key, cooldown):
             return None
         db.mark_alert_key(dedupe_key)
+    try:  # alerts are always delivered in Hebrew (app + Telegram + push)
+        from .. import translate
+        for f in ("title", "body"):
+            if translate.needs(alert.get(f)):
+                alert[f] = translate.one(alert[f])
+    except Exception as exc:  # noqa: BLE001
+        log.warning("translate alert failed: %s", exc)
     stored = db.insert_alert(alert)
     broadcast("alert", stored)
     if getattr(settings, "QUIET", False):  # Shabbat / Yom Tov: keep in the app, don't notify

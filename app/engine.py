@@ -14,6 +14,7 @@ from .analysis.sentiment import aggregate
 from .config import settings
 from .data import news, prices, yf_extras
 from .notify import hub
+from . import translate
 
 log = logging.getLogger("radar.engine")
 
@@ -116,19 +117,29 @@ def collect_news(tickers: list[str], names: dict[str, str]) -> list[dict]:
     with ThreadPoolExecutor(max_workers=6) as pool:
         news_res = dict(zip(tickers, pool.map(lambda t: news.ticker_news(t, names.get(t)), tickers)))
         social_res = dict(zip(tickers, pool.map(news.social, tickers)))
-    for t, items in news_res.items():
-        for it in items:
-            if db.upsert_news(it):
-                new_items.append(it)
     for t, soc in social_res.items():
         db.cache_set(f"social:{t}", {k: v for k, v in soc.items() if k != "items"})
-        for it in soc.get("items", []):
-            db.upsert_news(it)
-    for it in news.market_news(feeds.get("market") or None):
-        db.upsert_news(it)
-    for it in news.influencer_news(feeds.get("influencers") or {}, tickers):
-        if db.upsert_news(it):
-            new_items.append(it)
+    # everything is shown to the user in Hebrew: translate only items we haven't stored yet (one batched call)
+    groups = {
+        "ticker": [it for items in news_res.values() for it in items],
+        "social": [it for soc in social_res.values() for it in soc.get("items", [])],
+        "market": list(news.market_news(feeds.get("market") or None)),
+        "influencer": list(news.influencer_news(feeds.get("influencers") or {}, tickers)),
+    }
+    fresh = {k: [it for it in v if not db.news_exists(it["id"])] for k, v in groups.items()}
+    translate.news_items([it for v in fresh.values() for it in v])
+    # one-time catch-up: older stored items that are still in English
+    old = [r for r in db.list_news(limit=300, since_hours=7 * 24) if translate.needs(r.get("title"))][:150]
+    if old:
+        before = [r["title"] for r in old]
+        translate.news_items(old)
+        for r, b in zip(old, before):
+            if r["title"] != b:
+                db.execute("UPDATE news SET title=? WHERE id=?", (r["title"], r["id"]))
+    for k, v in fresh.items():
+        for it in v:
+            if db.upsert_news(it) and k in ("ticker", "influencer"):
+                new_items.append(it)
     return new_items
 
 
@@ -191,8 +202,11 @@ def _scan(force_llm: bool) -> dict:
                 continue
             yf_budget -= 1
         yfx[t] = _cached(f"yfx:{t}", 12 * 3600, yf_extras.get_extras, t) or {}
-        for n in yfx[t].get("news", [])[:10]:  # yfinance's own news feed joins the other sources
-            db.upsert_news(news._item(t, f"{n['source']} · Yahoo", "news", n["title"], n["url"], n["ts"]))
+        yfn = [news._item(t, f"{n['source']} · Yahoo", "news", n["title"], n["url"], n["ts"]) for n in yfx[t].get("news", [])[:10]]
+        yfn = [it for it in yfn if not db.news_exists(it["id"])]  # yfinance's own news feed joins the other sources
+        translate.news_items(yfn)
+        for it in yfn:
+            db.upsert_news(it)
 
     new_news: list[dict] = []
     if time.time() - state["last_news"] >= settings.NEWS_INTERVAL_MIN * 60 or state["scans"] == 0:
@@ -416,7 +430,7 @@ def generate_alerts(rows: dict, prev_snaps: dict, new_news: list[dict], congress
             congress_sent += 1
             fire(f"congress:{t}:{c['member']}:{c['date']}", 24 * 30, ticker=t, kind="congress", level="info",
                  title=f"עסקת קונגרס: {c['member']}",
-                 body=f"{c['type']} {c['amount']} · בוצע {c['date']} · דווח {c.get('disclosed', '')}",
+                 body=f"{translate.trade_type(c['type'])} {c['amount']} · בוצע {c['date']} · דווח {c.get('disclosed', '')}",
                  score=None, data=c)
     return sent
 
