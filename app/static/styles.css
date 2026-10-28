@@ -472,5 +472,11 @@ input[type=email] { background: var(--bg); border: 1px solid var(--line-2); bord
 .range-bar .ctype { font-family: "Heebo", sans-serif; font-size: 13px; border: 1px solid var(--line-2); }
 .range-bar .ctype.on { border-color: var(--s1); color: var(--text); }
 .rb-sep { flex: 1; }
+.range-bar button[data-range] { display: inline-flex; flex-direction: column; align-items: center; line-height: 1.15; min-width: 40px; }
+.rb-pct { font-size: 10.5px; font-weight: 600; min-height: 12px; }
+.rb-pct.up, .rp-main.up { color: var(--bull); } .rb-pct.down, .rp-main.down { color: var(--bear); }
+.range-perf { margin: 4px 0 8px; min-height: 44px; }
+.rp-main { display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap; }
+.rp-num { direction: ltr; unicode-bidi: isolate; } .rp-main b { font-size: 20px; } .rp-lbl { color: var(--text-2); font-size: 13px; font-weight: 600; }
 .chart-panel .price-chart { height: 320px; }
-@media (max-width: 680px) { .chart-panel .price-chart { height: 260px; } .range-bar button { padding: 6px 8px; } .dp-main b { font-size: 24px; } }
+@media (max-width: 680px) { .chart-panel .price-chart { height: 260px; } .range-bar button { padding: 6px 4px; } .range-bar button[data-range] { min-width: 0; flex: 1; } .range-bar .rb-sep { flex-basis: 100%; height: 0; } .dp-main b { font-size: 24px; } }

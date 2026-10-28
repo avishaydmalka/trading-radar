@@ -657,9 +657,10 @@ async function openStock(ticker) {
     <div class="dpane on" data-pane="general">
     <div class="panel chart-panel">
       <div class="chart-legend"><span id="legendBB"><i style="background:${css("--s1")}"></i>בולינגר (20,2)</span><span id="legendMA"><i style="background:${css("--s4")}"></i>ממוצע 50 <i style="background:${css("--s6")}"></i>ממוצע 200</span><span id="ohlc" class="num"></span></div>
+      <div class="range-perf" id="rangePerf"></div>
       <div class="price-chart" id="priceChart"></div>
       <div class="range-bar" id="rangeBar">
-        ${RANGE_BTNS.map(([k, l]) => `<button data-range="${k}">${l}</button>`).join("")}
+        ${RANGE_BTNS.map(([k, l]) => `<button data-range="${k}"><span>${l}</span><small class="rb-pct"></small></button>`).join("")}
         <span class="rb-sep"></span>
         <button class="ctype" id="ctypeBtn" title="קו / נרות">${state.ctype === "candles" ? "📈 קו" : "🕯️ נרות"}</button>
         <button class="ctype ${state.showBB === false ? "" : "on"}" id="bbBtn" title="רצועות בולינגר">BB</button>
@@ -916,6 +917,43 @@ function setDrawerPrice(s, q) {
     <div class="dp-when"><span class="clk ${q.live ? "live" : ""}">◷</span> ${esc(when)}${q.currency ? ` · מטבע ${esc(q.currency)}` : ""}</div>`;
 }
 
+const RANGE_NAMES = { "1d": "היום", "5d": "שבוע", "1mo": "חודש", "6mo": "חצי שנה", "1y": "שנה", "5y": "5 שנים", max: "מאז ההנפקה", snap: "התקופה" };
+// How much the stock moved over the selected range (Investing-style), plus the range's high/low
+function showRangePerf(s, range, pts, first, intraday) {
+  const last = pts[pts.length - 1].c, chg = last - first, pc = first ? (last / first - 1) * 100 : 0, up = chg >= 0;
+  const hi = Math.max(...pts.map((p) => p.h ?? p.c)), lo = Math.min(...pts.map((p) => p.l ?? p.c));
+  const d0 = typeof pts[0].time === "number" ? fmtTime(pts[0].time, intraday && range === "1d" ? { hour: "2-digit", minute: "2-digit" } : { day: "2-digit", month: "2-digit", year: "2-digit" })
+    : String(pts[0].time).split("-").reverse().join(".");
+  const dg = (v) => (Math.abs(v) >= 1000 ? 0 : 2);
+  const el = $("#rangePerf");
+  if (el) el.innerHTML = `<div class="rp-main ${up ? "up" : "down"}"><span class="rp-lbl">${RANGE_NAMES[range] || ""}</span>
+      <span class="rp-num num"><b>${up ? "▲" : "▼"} ${pct(pc)}</b> (${signed(chg, dg(chg))})</span></div>
+    <div class="rp-sub muted small num">${range === "1d" ? "מול סגירה קודמת" : `מ־${esc(d0)}`} · שיא ${nf(hi, dg(hi))} · שפל ${nf(lo, dg(lo))}</div>`;
+  state.rangePerf = state.rangePerf?.ticker === s.ticker ? state.rangePerf : { ticker: s.ticker };
+  state.rangePerf[range] = pc;
+  paintRangePcts();
+  if (!state.rangePerf.prefetched && state.cloud) { state.rangePerf.prefetched = true; prefetchRangePerf(s); }
+}
+// fill the % under every range button in the background (responses are edge-cached)
+async function prefetchRangePerf(s) {
+  for (const b of $$("#rangeBar [data-range]")) {
+    const r = b.dataset.range;
+    if (state.rangePerf[r] != null || r === "snap") continue;
+    const h = await api(`/api/chart/${encodeURIComponent(s.ticker)}?range=${r}`);
+    if (state.rangePerf?.ticker !== s.ticker) return;
+    if (!h || h.error || !(h.c?.length > 1)) continue;
+    const base = r === "1d" && h.meta?.prev_close ? h.meta.prev_close : h.c.find((v) => v != null);
+    if (state.rangePerf[r] == null && base) state.rangePerf[r] = (h.c[h.c.length - 1] / base - 1) * 100;
+    paintRangePcts();
+  }
+}
+function paintRangePcts() {
+  $$("#rangeBar [data-range]").forEach((b) => {
+    const v = state.rangePerf[b.dataset.range], sm = b.querySelector(".rb-pct");
+    if (sm && v != null) { sm.textContent = (v >= 0 ? "+" : "") + v.toFixed(Math.abs(v) >= 100 ? 0 : 1) + "%"; sm.className = "rb-pct " + (v >= 0 ? "up" : "down"); }
+  });
+}
+
 async function drawChart(s, range) {
   state.range = range;
   $$("#rangeBar [data-range]").forEach((b) => b.classList.toggle("on", b.dataset.range === range));
@@ -942,6 +980,7 @@ async function drawChart(s, range) {
   const closes = pts.map((p) => p.c);
   const first = range === "1d" && meta?.prev_close ? meta.prev_close : closes[0];
   const upMove = closes[closes.length - 1] >= first;
+  showRangePerf(s, range, pts, first, intraday);
 
   const el = $("#priceChart");
   const c = makeChart("price", el, {
