@@ -280,11 +280,32 @@ def scan_user(kv: KV, user: dict, force: bool, vapid: dict, public_url: str, llm
     return {**result, "tickers_list": sorted(stocks), "llm_requests": llm.calls, "llm_info": llm_info}
 
 
+def quiet_state(kv: KV, now: float | None = None) -> dict:
+    """Shabbat / Yom Tov windows (written by the Worker from Hebcal). Returns {current, last_ended, enabled}."""
+    now = now or time.time()
+    mode = kv.get_json("shabbat_mode") or {}
+    enabled = mode.get("enabled", True) is not False
+    windows = (kv.get_json("quiet_windows") or {}).get("windows") or []
+    if not windows:  # Worker hasn't fetched yet: conservative Friday 12:30 → Saturday 19:30 UTC
+        from datetime import datetime, timedelta, timezone
+        d = datetime.fromtimestamp(now, timezone.utc).replace(hour=12, minute=30, second=0, microsecond=0)
+        d -= timedelta(days=(d.weekday() - 4) % 7)
+        windows = [{"start": (d.timestamp()) * 1000, "end": (d.timestamp() + 31 * 3600) * 1000, "kind": "shabbat", "title": "שבת"}]
+    ms = now * 1000
+    current = next((w for w in windows if w["start"] <= ms < w["end"]), None) if enabled else None
+    ended = [w for w in windows if w["end"] <= ms and ms - w["end"] < 8 * 3600 * 1000]
+    return {"enabled": enabled, "current": current, "last_ended": ended[-1] if ended and enabled else None}
+
+
 def send_digests(kv: KV, users: list[dict], only: str, vapid: dict) -> None:
     from app import digest
     from app.notify import telegram
 
     force = os.environ.get("FORCE_DIGEST") == "1"
+    q = quiet_state(kv)
+    if q["current"]:
+        log.info("quiet window (%s) – no digests until havdalah", q["current"].get("title"))
+        return
     disc_items = (kv.get_json("discovery") or {}).get("items", [])
     sent = kv.get_json("digest_sent") or {}
     changed = False
@@ -293,6 +314,9 @@ def send_digests(kv: KV, users: list[dict], only: str, vapid: dict) -> None:
         if only and uid != only:
             continue
         slot = digest.due_slot(sent.get(uid) or {})
+        after = q["last_ended"]
+        if after and f"after:{int(after['end'])}" not in (sent.get(uid) or {}):
+            slot = (f"after:{int(after['end'])}", "✨ שבוע טוב – סיכום המלצות" if after.get("kind") == "shabbat" else f"✨ מוצאי {after.get('title', 'חג')} – סיכום המלצות")
         if force:
             slot = (f"manual:{int(time.time())}", "📋 סיכום המלצות עדכני")
         if not slot:
@@ -315,6 +339,12 @@ def send_digests(kv: KV, users: list[dict], only: str, vapid: dict) -> None:
         _push(kv, uid, vapid, {"title": f"📋 {title}", "body": "המלצות מעודכנות לתיק, לרשימת המעקב ו‑TOP 5 – הקש לצפייה", "url": "/#digest", "tag": "digest"})
         user_sent = {k: v for k, v in (sent.get(uid) or {}).items() if v > time.time() - 3 * 86400}
         user_sent[key] = time.time()
+        if key.startswith("after:"):  # don't send the regular evening digest on top of it
+            from datetime import datetime
+            from zoneinfo import ZoneInfo
+            day = datetime.now(ZoneInfo("Asia/Jerusalem")).strftime("%Y-%m-%d")
+            for sid, _, _ in digest.SLOTS:
+                user_sent.setdefault(f"{day}:{sid}", time.time())
         sent[uid] = user_sent
         changed = True
         log.info("digest %s → %s (telegram=%s)", title, u.get("name") or uid, tg_ok)
@@ -353,6 +383,11 @@ def main() -> int:
     from app.data import prices
 
     users = load_users(kv)
+    q = quiet_state(kv)
+    if q["current"]:
+        from app.config import settings as _s
+        _s.QUIET = True  # alerts are stored in the app but nothing is sent to Telegram / phones
+        log.info("🕯️ %s – notifications muted", q["current"].get("title"))
     configs = {u["id"]: kv.get_json(f"config:{u['id']}") or {} for u in users}
     all_tickers = sorted({h["ticker"] for c in configs.values() for h in c.get("holdings") or []}
                          | {w["ticker"] for c in configs.values() for w in c.get("watchlist") or []})

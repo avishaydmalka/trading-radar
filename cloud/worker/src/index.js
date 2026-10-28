@@ -11,6 +11,7 @@
  */
 
 import { aiAccess, recordUsage, liveLookup, recommend, ask } from "./ai.js";
+import { CITIES, getShabbatMode, quietNow, quietWindows } from "./shabbat.js";
 
 const ACTION_HE = { BUY: "קנייה", ADD: "הגדלה", HOLD: "החזקה", WATCH: "מעקב", AVOID: "להימנע", TRIM: "מימוש חלקי", SELL: "מכירה" };
 const LEVEL_EMOJI = { critical: "🔴", warning: "🟡", opportunity: "🟢", info: "🔵" };
@@ -284,6 +285,18 @@ async function api(request, env, ctx, url, path, user) {
     }
     const usage = await kvJSON(env, "llm_usage", {});
     return json({ keys: maskKeys(keys), shared_used_today: usage.users?.[uid] || 0 });
+  }
+  if (path === "/api/shabbat") {
+    if (m === "PUT") {
+      if (!user.is_admin) return json({ error: "רק המנהל יכול לשנות" }, 403);
+      const cur = await getShabbatMode(env);
+      const next = { enabled: body.enabled != null ? !!body.enabled : cur.enabled, geonameid: CITIES[body.geonameid] ? body.geonameid : cur.geonameid };
+      await putJSON(env, "shabbat_mode", next);
+      await quietWindows(env, Date.now(), true);
+    }
+    const q = await quietNow(env);
+    const all = await quietWindows(env);
+    return json({ ...q, cities: CITIES, windows: (all.windows || []).filter((w) => w.end > Date.now()).slice(0, 6) });
   }
   if (path === "/api/llm/usage") {
     if (!user.is_admin) return json({ error: "admin only" }, 403);
@@ -601,6 +614,7 @@ async function dashboard(env, user) {
   d.unread = d.alerts.filter((a) => !a.read).length;
   d.features = { ...d.features, ...features };
   d.auto = await kvJSON(env, "auto_state");
+  d.quiet = await quietNow(env).catch(() => null);
   return d;
 }
 
@@ -623,6 +637,14 @@ async function autoScan(env, now) {
     return;
   }
   const st = (await env.RADAR.get("auto_state", "json")) || {};
+  const quiet = await quietNow(env, now);
+  if (quiet.current) { // Shabbat / Yom Tov: no scans, no notifications – resume after havdalah
+    if (!st.quiet || st.quiet.end !== quiet.current.end) {
+      await env.RADAR.put("auto_state", JSON.stringify({ ...st, ok: true, error: "", checked: now, next: quiet.current.end, quiet: quiet.current }));
+    }
+    return;
+  }
+  if (st.quiet) { st.quiet = null; st.last = 0; } // window just ended → scan right away (sends the after‑Shabbat summary)
   const every = autoInterval(env, now);
   if (st.last && now - st.last < (every - 2) * 60_000) return; // not due yet (2 min slack for the 10‑min cron)
   const r = await fetch(`https://api.github.com/repos/${env.GITHUB_REPO}/actions/workflows/scan.yml/dispatches`, {

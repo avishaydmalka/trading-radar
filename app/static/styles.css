@@ -411,3 +411,17 @@ input[type=email] { background: var(--bg); border: 1px solid var(--line-2); bord
 .dg-plan b { font-weight: 600; }
 .dg-hold { padding: 4px; }
 @media (max-width: 680px) { .dg-row { grid-template-columns: auto auto 1fr; } .dg-row > .num { display: none; } }
+
+/* ---------------- Shabbat / holidays */
+.quiet-banner { background: linear-gradient(90deg, #3b2a12, #1e2a4a); color: #fde7b0; text-align: center; font-size: 13.5px; padding: 7px 16px; }
+.shabbat-feat { align-items: start; }
+.switch { position: relative; width: 46px; height: 26px; flex: none; }
+.switch input { position: absolute; opacity: 0; inset: 0; cursor: pointer; z-index: 1; }
+.switch span { position: absolute; inset: 0; border-radius: 999px; background: var(--line-2); transition: .2s; }
+.switch span::after { content: ""; position: absolute; top: 3px; inset-inline-start: 3px; width: 20px; height: 20px; border-radius: 50%; background: #fff; transition: .2s; }
+.switch input:checked + span { background: var(--bull); }
+.switch input:checked + span::after { inset-inline-start: 23px; }
+.switch input:focus-visible + span { outline: 2px solid var(--accent); outline-offset: 2px; }
+.sh-list { display: grid; gap: 4px; padding: 2px 4px; }
+.sh-row { display: flex; justify-content: space-between; gap: 8px; flex-wrap: wrap; padding: 6px 10px; border-radius: 9px; background: var(--card); font-size: 13px; }
+.sh-row.now { box-shadow: inset 0 0 0 1px #c9a24a; }

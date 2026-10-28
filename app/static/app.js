@@ -140,8 +140,19 @@ function renderStatus(s) {
   const last = s.last_scan ? new Date(s.last_scan * 1000).toLocaleTimeString("he-IL", { hour: "2-digit", minute: "2-digit" }) : "—";
   if (state.cloud) {
     const auto = state.d?.auto;
+    const qt = state.d?.quiet;
+    const hm = (ms) => new Date(ms).toLocaleTimeString("he-IL", { hour: "2-digit", minute: "2-digit" });
+    const dayName = (ms) => new Date(ms).toLocaleDateString("he-IL", { weekday: "long" });
+    if (qt?.current) {
+      $("#scanInfo").textContent = `🕯️ ${qt.current.title} – התראות וסריקות מושהות עד ${dayName(qt.current.end)} ${hm(qt.current.end)}`;
+      $("#quietBanner").hidden = false;
+      $("#quietBanner").textContent = `🕯️ ${qt.current.kind === "chag" ? "חג שמח" : "שבת שלום"} · ${qt.current.title} · ההתראות יחזרו במוצאי ${qt.current.kind === "chag" ? "החג" : "השבת"} (${hm(qt.current.end)}) עם סיכום המלצות`;
+      return;
+    }
+    $("#quietBanner").hidden = true;
+    const soon = qt?.enabled && qt?.upcoming && qt.upcoming.start - Date.now() < 18 * 3600_000 ? ` · 🕯️ ${qt.upcoming.kind === "chag" ? "החג" : "השבת"} נכנס${qt.upcoming.kind === "chag" ? "" : "ת"} ב‑${hm(qt.upcoming.candles || qt.upcoming.start)}` : "";
     const nextTxt = auto?.next ? ` · סריקה אוטומטית הבאה ~${new Date(auto.next).toLocaleTimeString("he-IL", { hour: "2-digit", minute: "2-digit" })}` : "";
-    $("#scanInfo").textContent = `עודכן ${ago(s.last_scan)} (${last})${nextTxt}` + (s.last_error ? " · ⚠ שגיאה" : "") + (auto && auto.ok === false ? ` · ⚠ ${auto.error || "התזמון האוטומטי נכשל"}` : "");
+    $("#scanInfo").textContent = `עודכן ${ago(s.last_scan)} (${last})${nextTxt}${soon}` + (s.last_error ? " · ⚠ שגיאה" : "") + (auto && auto.ok === false ? ` · ⚠ ${auto.error || "התזמון האוטומטי נכשל"}` : "");
     return;
   }
   const next = s.next_scan ? Math.max(0, Math.round((s.next_scan - Date.now() / 1000) / 60)) : null;
@@ -1035,10 +1046,11 @@ function settingsModal(tab = "risk") {
       ${row("🤖 מודל שפה חינמי", f.llm, f.llm ? `סדר: ${f.llm_providers.join(" → ")}` : "ללא מפתח – ניתוח מבוסס חוקים. הוסף GEMINI_API_KEY או GROQ_API_KEY")}
       ${row("📈 מצב נתוני אמת", !d.demo, d.demo ? "DEMO_MODE=1 – נתונים סינתטיים" : "Yahoo Finance + RSS + StockTwits")}
       ${row("📤 ברוקר Alpaca (Paper)", f.broker, "אופציונלי – פקודות רק באישור ידני")}
-      <div class="feat"><span>⏱️ תדירות סריקה</span><span class="num">${state.cloud ? "20" : d.status?.interval_min ?? "—"} ד׳</span></div>
+      <div class="feat"><span>⏱️ תדירות סריקה</span><span class="num">${state.cloud ? "30 (שעתיים בלילה)" : d.status?.interval_min ?? "—"} ד׳</span></div>
       <div class="feat"><span>🔢 סריקות</span><span class="num">${d.status?.scans ?? 0}</span></div>
       ${d.llm ? `<div class="feat"><span>🤖 AI בחשבון שלך<div class="hint muted small">${aiStatusText(d.llm)}${d.llm.last_ok ? ` · עובד דרך ${esc(d.llm.last_ok.split(":")[0])}` : ""}</div>${aiErrorsText(d.llm)}</span><span></span></div>` : ""}
       ${me?.is_admin ? `<div class="feat" id="sharedUsage"><span>🔑 מפתח משותף – שימוש היום</span><span class="num">…</span></div>` : ""}
+      <div id="shabbatBox"></div>
       <button class="btn" id="sLLM" style="margin-top:8px">🤖 סריקה + ניתוח AI מלא עכשיו</button></div>`;
   }
   modal("הגדרות", `<div class="tabs">${Object.entries(tabs).map(([k, v]) => `<button data-tab="${k}" class="${k === tab ? "on" : ""}">${v}</button>`).join("")}</div>${body}`);
@@ -1152,10 +1164,29 @@ function settingsModal(tab = "risk") {
       e.target.reset(); drawUsers();
     };
   }
+  if (tab === "system" && state.cloud) drawShabbat(me?.is_admin);
   if (tab === "system" && me?.is_admin) api("/api/llm/usage").then((u) => {
     const el = $("#sharedUsage .num"); if (el && !u.error) el.textContent = `${u.total || 0} בקשות`;
   });
   if (tab === "system") $("#sLLM").onclick = async () => { await api("/api/scan?llm=1", { method: "POST" }); closeModal(); toast({ level: "info", title: "סריקה מלאה התחילה", body: "התוצאות יתעדכנו אוטומטית" }); };
+}
+
+async function drawShabbat(isAdmin) {
+  const box = $("#shabbatBox");
+  if (!box) return;
+  const r = await api("/api/shabbat");
+  if (r.error) return;
+  const fmt = (ms) => new Date(ms).toLocaleString("he-IL", { weekday: "short", day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit" });
+  box.innerHTML = `<div class="feat shabbat-feat"><span>🕯️ שבתות וחגים – בלי התראות וסריקות
+      <div class="hint muted small">מהדלקת נרות ועד צאת השבת/החג, לפי לוח השנה העברי (Hebcal, מנהג ארץ ישראל). במוצאי שבת/חג נשלח סיכום המלצות.</div></span>
+      ${isAdmin ? `<label class="switch"><input type="checkbox" id="shOn" ${r.enabled ? "checked" : ""}><span></span></label>` : `<span class="${r.enabled ? "on-dot" : "off-dot"}">${r.enabled ? "● פעיל" : "○ כבוי"}</span>`}</div>
+    ${isAdmin ? `<div class="feat"><span>📍 זמני כניסה ויציאה לפי</span><select id="shCity">${Object.entries(r.cities || {}).map(([id, n]) => `<option value="${id}" ${id === r.geonameid ? "selected" : ""}>${esc(n)}</option>`).join("")}</select></div>` : ""}
+    ${(r.windows || []).length ? `<div class="sh-list">${r.windows.slice(0, 4).map((w) => `<div class="sh-row ${r.current && r.current.end === w.end ? "now" : ""}"><b>${esc(w.title)}</b><span class="muted small">${fmt(w.candles || w.start)} ← ${fmt(w.havdalah || w.end)}</span></div>`).join("")}</div>` : ""}`;
+  if (isAdmin) {
+    const save = async (body) => { const x = await api("/api/shabbat", { method: "PUT", body }); if (!x.error) { toast({ level: "opportunity", title: "נשמר" }); drawShabbat(true); load(); } };
+    $("#shOn").onchange = (e) => save({ enabled: e.target.checked });
+    $("#shCity").onchange = (e) => save({ geonameid: e.target.value });
+  }
 }
 
 /* ------------------------------------------------------------------ notifications */

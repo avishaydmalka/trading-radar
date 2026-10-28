@@ -60,6 +60,8 @@ def send_alert(alert: dict, dedupe_key: str | None = None, cooldown_hours: float
         db.mark_alert_key(dedupe_key)
     stored = db.insert_alert(alert)
     broadcast("alert", stored)
+    if getattr(settings, "QUIET", False):  # Shabbat / Yom Tov: keep in the app, don't notify
+        return stored
     try:
         telegram.send_alert(stored)
     except Exception as exc:  # noqa: BLE001
