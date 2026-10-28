@@ -107,6 +107,7 @@ async function load() {
   state.lastAlertTs = Math.max(0, ...d.alerts.map((a) => a.ts));
   state.d = d;
   render();
+  fetchQuotes();
 }
 
 function render() {
@@ -277,9 +278,66 @@ function sigChips(sigs, n = 3) {
     .map((s) => `<span class="sig ${s.dir > 0 ? "p" : s.dir < 0 ? "n" : "z"}">${s.dir > 0 ? "▲" : s.dir < 0 ? "▼" : "◆"} ${esc(s.title.replace(/^[🛑🎯]\s*/u, ""))}</span>`).join("");
 }
 
+/* ------------------------------------------------------------------ Investing-style list rows */
+const VIEW_KEY = "radar_view";
+state.view = (() => { try { return localStorage.getItem(VIEW_KEY) || "list"; } catch (e) { return "list"; } })();
+
+function quoteFor(s) {
+  const q = state.quotes?.[s.ticker];
+  const ind = s.ind || {};
+  if (q && q.price != null) return q;
+  return { price: ind.price, change: ind.price != null && ind.prev_close != null ? ind.price - ind.prev_close : null, change_pct: ind.change_pct,
+    time: s.updated, live: false, currency: s.currency, spark: s.spark };
+}
+
+function qrowHTML(s, kind) {
+  const q = quoteFor(s);
+  const when = q.time ? (q.live ? fmtTime(q.time, { hour: "2-digit", minute: "2-digit", second: "2-digit" }) : fmtTime(q.time, { day: "2-digit", month: "2-digit" })) : "";
+  const h = s.holding, pos = s.position || {};
+  const dec = q.price >= 1000 ? 1 : q.price >= 10 ? 2 : 4;
+  const extra = kind === "held"
+    ? `<span class="q-pnl num ${cls(s.pnl_pct)}">${pct(s.pnl_pct, 1)}</span><span class="muted">${nf(h?.shares, 0)} יח׳ · ${money(pos.value, state.d.portfolio.base)}</span>`
+    : (s.sizing?.entry ? `<span class="muted">כניסה ${nf(s.sizing.entry)}</span>` : "");
+  const alarm = ["SELL", "TRIM"].includes(s.action);
+  return `<div class="qrow ${alarm ? "alarm" : ""}" data-ticker="${esc(s.ticker)}">
+    <div class="q-name"><b>${esc(hebName(s.ticker, s.name))}</b>
+      <div class="q-sub"><span class="tkr" dir="ltr">${esc(s.ticker.replace(/\.TA$/, ""))}</span> | <span class="clk ${q.live ? "live" : ""}">◷</span> <span class="num">${esc(when)}</span></div>
+      <div class="q-tags"><span class="action act-${s.action}">${ACTION_HE[s.action] || s.action || "—"}</span>${extra}</div></div>
+    <div class="q-spark">${spark(q.spark || s.spark, 80, 30)}</div>
+    <div class="q-price"><b class="num">${nf(q.price, dec)}</b>
+      <div class="num ${cls(q.change)}">${signed(q.change, dec)} (${pct(q.change_pct)})</div></div>
+  </div>`;
+}
+
+function viewToggleHTML() {
+  return `<div class="seg view-seg"><button data-view="list" class="${state.view === "list" ? "on" : ""}" title="רשימה">☰</button><button data-view="cards" class="${state.view === "cards" ? "on" : ""}" title="כרטיסים">▦</button></div>`;
+}
+
+async function fetchQuotes() {
+  if (!state.cloud || STATIC || document.hidden || loginShown || !state.d) return;
+  const syms = [...(state.d.holdings || []), ...(state.d.opportunities || [])].map((x) => x.ticker);
+  if (!syms.length) return;
+  const q = await api(`/api/quotes?s=${encodeURIComponent(syms.join(","))}`);
+  if (!q || q.error) return;
+  const before = state.quotes || {};
+  state.quotes = { ...before, ...q };
+  renderHoldings(); renderOpps();
+  for (const [t, v] of Object.entries(q)) {
+    const old = before[t];
+    if (old && old.price !== v.price) $$(`.qrow[data-ticker="${CSS.escape(t)}"]`).forEach((r) => r.classList.add(v.price > old.price ? "flash-up" : "flash-down"));
+  }
+}
+
 function renderHoldings() {
   const list = state.d.holdings.filter((h) => state.basket === "all" || h.basket === state.basket)
     .sort((a, b) => (b.position?.value || 0) - (a.position?.value || 0));
+  $("#holdings").classList.toggle("qlist", state.view === "list");
+  if (state.view === "list") {
+    $("#holdings").innerHTML = list.length ? list.map((h) => h.pending ? `<div class="qrow"><div class="q-name"><b>${esc(h.ticker)}</b><div class="q-sub">ממתין לסריקה…</div></div></div>` : qrowHTML(h, "held")).join("")
+      : `<div class="empty">התיק ריק – הוסף פוזיציה ראשונה</div>`;
+    $("#warnings").innerHTML = (state.d.portfolio.warnings || []).slice(0, 6).map((w) => `<div class="warn-row">⚠️ ${esc(w.text)}</div>`).join("");
+    return;
+  }
   $("#holdings").innerHTML = list.length ? list.map((h) => {
     if (h.pending) return `<div class="hcard skeleton"><div class="h-tk">${esc(h.ticker)}</div><div class="muted small">ממתין לסריקה…</div></div>`;
     const ind = h.ind || {}, pos = h.position || {}, ccy = h.currency;
@@ -390,6 +448,12 @@ function renderEquity(d) {
 
 function renderOpps() {
   const list = state.d.opportunities;
+  $("#opps").classList.toggle("qlist", state.view === "list");
+  if (state.view === "list") {
+    $("#opps").innerHTML = list.length ? list.filter((o) => !o.pending).sort((a, b) => (b.score || 0) - (a.score || 0)).map((o) => qrowHTML(o, "watch")).join("")
+      : `<div class="empty">הוסף מניות לרשימת המעקב כדי לקבל הזדמנויות</div>`;
+    return;
+  }
   $("#opps").innerHTML = list.length ? list.map((o) => {
     if (o.pending) return "";
     const sz = o.sizing || {}, a = o.analysis || {}, ind = o.ind || {};
@@ -572,10 +636,11 @@ async function openStock(ticker) {
   state.stock = s;
   const ind = s.ind, ccy = s.currency;
   const tracked = s.source === "tracked" || (!s.source && !STATIC) || STATIC;
-  $("#dTicker").textContent = s.ticker;
-  $("#dName").innerHTML = `${esc(s.name || "")}${s.basket ? ` · ${esc(s.basket)}` : ""}
+  $("#dTicker").textContent = hebName(s.ticker, s.name);
+  $("#dName").innerHTML = `<span dir="ltr">(${esc(s.ticker)})</span>${s.basket ? ` · ${esc(s.basket)}` : ""}
     ${s.source === "discovery" ? ` <span class="chip bull">🔭 TOP ${s.rank || ""} גילוי</span>` : s.source === "live" ? ` <span class="chip">🔎 לא במעקב</span>` : ""}`;
-  $("#dPrice").innerHTML = `${sym(ccy)}${nf(ind.price)} <div class="${cls(ind.change_pct)}" style="font-size:14px">${pct(ind.change_pct)}</div>`;
+  const q0 = state.quotes?.[s.ticker];
+  setDrawerPrice(s, q0 || { price: ind.price, change: ind.price - (ind.prev_close || ind.price), change_pct: ind.change_pct, currency: ccy, time: s.updated, live: false });
   const h = s.holding, pos = s.position, sz = s.sizing || {};
   const lots = state.d?.lots?.filter((l) => l.ticker === s.ticker) || [];
   const f = s.fundamentals || {};
@@ -583,16 +648,27 @@ async function openStock(ticker) {
     ["שולי רווח", f.profit_margin != null ? f.profit_margin * 100 : null, 1, "%"], ["יעד אנליסטים", f.target_mean, 2], ["המלצה", f.recommendation],
     ["בטא", f.beta, 2], ["דוחות הבאים", f.next_earnings], ["שווי שוק", f.market_cap ? f.market_cap / 1e9 : null, 1, "B"]].filter((x) => x[1] != null);
 
+  const RANGE_BTNS = state.cloud ? [["1d", "1D"], ["5d", "1W"], ["1mo", "1M"], ["6mo", "6M"], ["1y", "1Y"], ["5y", "5Y"], ["max", "מקס׳"]] : [["snap", "6M"]];
   $("#dBody").innerHTML = `
-    <div class="panel ai-box" id="aiBox">${aiBoxHTML(s)}</div>
-    ${state.cloud ? chatPanelHTML(s) : ""}
-
-    <div class="panel">
-      <div class="chart-legend"><span><i style="background:${css("--s1")}"></i>רצועות בולינגר (20,2)</span><span><i style="background:${css("--s4")}"></i>ממוצע 50</span><span><i style="background:${css("--s6")}"></i>ממוצע 200</span><span id="ohlc" class="num"></span></div>
+    <div class="dtabs" role="tablist">
+      <button class="on" data-pane="general">כללי</button><button data-pane="tech">ניתוח טכני</button>
+      <button data-pane="analysts">אנליסטים</button><button data-pane="news">חדשות</button>
+    </div>
+    <div class="dpane on" data-pane="general">
+    <div class="panel chart-panel">
+      <div class="chart-legend"><span id="legendBB"><i style="background:${css("--s1")}"></i>בולינגר (20,2)</span><span id="legendMA"><i style="background:${css("--s4")}"></i>ממוצע 50 <i style="background:${css("--s6")}"></i>ממוצע 200</span><span id="ohlc" class="num"></span></div>
       <div class="price-chart" id="priceChart"></div>
-      <div class="chart-legend" style="margin-top:6px"><span><i style="background:${css("--s3")}"></i>RSI (14)</span><span class="muted">קווים מקווקווים: 30 / 70</span></div>
+      <div class="range-bar" id="rangeBar">
+        ${RANGE_BTNS.map(([k, l]) => `<button data-range="${k}">${l}</button>`).join("")}
+        <span class="rb-sep"></span>
+        <button class="ctype" id="ctypeBtn" title="קו / נרות">${state.ctype === "candles" ? "📈 קו" : "🕯️ נרות"}</button>
+        <button class="ctype ${state.showBB === false ? "" : "on"}" id="bbBtn" title="רצועות בולינגר">BB</button>
+      </div>
+      <div class="chart-legend" style="margin-top:8px"><span><i style="background:${css("--s3")}"></i>RSI (14)</span><span class="muted">30 / 70</span><span class="muted small" id="rangeNote"></span></div>
       <div class="rsi-chart" id="rsiChart"></div>
     </div>
+    <div class="panel ai-box" id="aiBox">${aiBoxHTML(s)}</div>
+    ${state.cloud ? chatPanelHTML(s) : ""}
 
     <div class="panel"><h3>📐 ${h ? "הפוזיציה שלך" : "תוכנית עסקה מוצעת"}</h3>
       <div class="metrics">
@@ -622,6 +698,8 @@ async function openStock(ticker) {
       </div>
     </div>
 
+    </div>
+    <div class="dpane" data-pane="tech">
     <div class="panel"><h3>📡 איתותים פעילים</h3>
       <div class="sig-list">${(s.signals || []).length ? s.signals.slice().sort((x, y) => y.strength - x.strength).map((g) => `
         <div class="sig-item"><div class="si">${g.dir > 0 ? "🟢" : g.dir < 0 ? "🔴" : "🟣"}</div>
@@ -629,8 +707,6 @@ async function openStock(ticker) {
           <div class="strength" title="עוצמה ${Math.round(g.strength * 100)}%"><div style="width:${g.strength * 100}%;background:${g.dir > 0 ? css("--bull") : g.dir < 0 ? css("--bear") : css("--ai")}"></div></div></div>`).join("")
         : `<div class="empty">אין איתות פעיל – המניה בטווח</div>`}</div>
     </div>
-
-    ${yfPanelHTML(s)}
 
     <div class="panel"><h3>📊 נתונים</h3>
       <div class="metrics">
@@ -655,15 +731,27 @@ async function openStock(ticker) {
       <div id="btOut"><div class="muted small">בדוק איך האסטרטגיה הייתה מתפקדת על המניה הזו בעבר, מול קנה-והחזק.</div></div>
     </div>
 
+    </div>
+    <div class="dpane" data-pane="analysts">${yfPanelHTML(s) || `<div class="panel empty">אין נתוני אנליסטים למניה הזו (נפוץ במניות קטנות ובחלק ממניות ת״א)</div>`}</div>
+    <div class="dpane" data-pane="news">
     <div class="panel"><h3>📰 חדשות ורשתות</h3>
       <ul class="news-list">${(s.news_items || []).map((n) => `<li class="news-item"><div class="sent" style="background:${n.sentiment > .15 ? css("--bull") : n.sentiment < -.15 ? css("--bear") : css("--line-2")}"></div>
         <div><a class="nt" href="${esc(n.url)}" target="_blank" rel="noopener" style="color:inherit">${esc(n.title)}</a><div class="nm"><span>${esc(n.source)}</span><span>${ago(n.ts)}</span></div></div></li>`).join("") || `<div class="empty">אין חדשות</div>`}</ul>
     </div>
     ${s.congress?.length ? `<div class="panel"><h3>🏛️ עסקאות קונגרס</h3><ul class="congress">${s.congress.map((c) => `<li><span>${/purchase|buy/i.test(c.type) ? "🟢" : "🔴"}</span><div><b>${esc(c.member)}</b> <span class="muted">${esc(c.party)}</span><div class="muted small">${esc(c.amount)}</div></div><span class="small muted">${esc(c.date)}</span></li>`).join("")}</ul></div>` : ""}
+    </div>
   `;
+  $$(".dtabs button").forEach((b) => b.onclick = () => {
+    $$(".dtabs button").forEach((x) => x.classList.toggle("on", x === b));
+    $$(".dpane").forEach((p) => p.classList.toggle("on", p.dataset.pane === b.dataset.pane));
+    $(".drawer-panel").scrollTop = 0;
+  });
   $("#drawer").hidden = false;
   document.body.style.overflow = "hidden";
-  drawPriceChart(s);
+  $$("#rangeBar [data-range]").forEach((b) => b.onclick = () => drawChart(s, b.dataset.range));
+  $("#ctypeBtn").onclick = () => { state.ctype = state.ctype === "candles" ? "area" : "candles"; $("#ctypeBtn").textContent = state.ctype === "candles" ? "📈 קו" : "🕯️ נרות"; drawChart(s, state.range); };
+  $("#bbBtn").onclick = () => { state.showBB = state.showBB === false; $("#bbBtn").classList.toggle("on", state.showBB); drawChart(s, state.range); };
+  drawChart(s, state.cloud ? (state.range && state.range !== "snap" ? state.range : "1d") : "snap");
   $("#btRun").onclick = () => runBacktest(s.ticker);
   $$("[data-edit-lot]").forEach((b) => b.onclick = () => holdingForm(state.d.lots.find((l) => l.id === +b.dataset.editLot)));
   $$("[data-add-from]").forEach((b) => b.onclick = () => holdingForm({ ticker: b.dataset.addFrom, avg_price: sz.entry, stop_loss: sz.stop, take_profit: sz.target, shares: sz.shares, basket: s.basket }));
@@ -796,55 +884,125 @@ function bindChat(s) {
   $$(".chat-sugg [data-q]").forEach((b) => b.onclick = () => send(b.dataset.q));
 }
 
-function drawPriceChart(s) {
-  const ch = s.chart;
-  const el = $("#priceChart"), rel = $("#rsiChart");
-  const c = makeChart("price", el);
+/* ------------------------------------------------------------------ price chart with time ranges */
+const IL_TZ = "Asia/Jerusalem";
+function smaA(a, n) { return a.map((_, i) => (i + 1 < n ? null : a.slice(i + 1 - n, i + 1).reduce((x, y) => x + y, 0) / n)); }
+function bbA(a, n = 20, k = 2) {
+  const m = smaA(a, n);
+  return a.map((_, i) => {
+    if (m[i] == null) return [null, null, null];
+    const w = a.slice(i + 1 - n, i + 1), sd = Math.sqrt(w.reduce((s, v) => s + (v - m[i]) ** 2, 0) / n);
+    return [m[i] + k * sd, m[i], m[i] - k * sd];
+  });
+}
+function rsiA(c, n = 14) {
+  const out = Array(c.length).fill(null); let g = 0, l = 0;
+  for (let i = 1; i < c.length; i++) {
+    const d = c[i] - c[i - 1], up = Math.max(d, 0), dn = Math.max(-d, 0);
+    if (i <= n) { g += up / n; l += dn / n; if (i === n) out[i] = l ? 100 - 100 / (1 + g / l) : 100; continue; }
+    g = (g * (n - 1) + up) / n; l = (l * (n - 1) + dn) / n; out[i] = l ? 100 - 100 / (1 + g / l) : 100;
+  }
+  return out;
+}
+const fmtTime = (ts, opts) => new Date(ts * 1000).toLocaleString("he-IL", { timeZone: IL_TZ, ...opts });
+
+function setDrawerPrice(s, q) {
+  if (!q || q.price == null) return;
+  const up = (q.change ?? 0) >= 0;
+  const when = q.time ? (q.live ? `מסחר חי · ${fmtTime(q.time, { hour: "2-digit", minute: "2-digit" })}`
+    : `${fmtTime(q.time, { day: "2-digit", month: "2-digit" })} - בהשהייה`) : "";
+  $("#dPrice").innerHTML = `<div class="dp-main"><span class="dp-arrow ${up ? "up" : "down"}">${up ? "▲" : "▼"}</span><b class="num">${nf(q.price, q.price >= 1000 ? 0 : 2)}</b></div>
+    <div class="dp-chg num ${up ? "up" : "down"}">${signed(q.change, Math.abs(q.change) >= 100 ? 0 : 2)} (${pct(q.change_pct)})</div>
+    <div class="dp-when"><span class="clk ${q.live ? "live" : ""}">◷</span> ${esc(when)}${q.currency ? ` · מטבע ${esc(q.currency)}` : ""}</div>`;
+}
+
+async function drawChart(s, range) {
+  state.range = range;
+  $$("#rangeBar [data-range]").forEach((b) => b.classList.toggle("on", b.dataset.range === range));
+  let bars = null, intraday = false, meta = null;
+  if (range !== "snap" && state.cloud) {
+    $("#rangeNote").textContent = "טוען…";
+    const h = await api(`/api/chart/${encodeURIComponent(s.ticker)}?range=${range}`);
+    if (state.stock?.ticker !== s.ticker || state.range !== range) return;
+    if (h && !h.error && h.c?.length > 1) { bars = h; intraday = h.intraday; meta = h.meta; }
+  }
+  if (!bars) { // the scanner's daily snapshot (~8 months)
+    const ch = s.chart || { t: [], o: [], h: [], l: [], c: [], v: [] };
+    bars = { t: ch.t, o: ch.o, h: ch.h, l: ch.l, c: ch.c, v: ch.v };
+    if (range !== "snap" && state.cloud) $("#rangeNote").textContent = "· הטווח לא זמין – מוצגים נתוני הסריקה";
+  } else $("#rangeNote").textContent = intraday ? `· נרות ${bars.interval}` : "";
+  if (meta) {
+    setDrawerPrice(s, meta);
+    if (range === "1d") state.quotes = { ...(state.quotes || {}), [s.ticker]: { ...(state.quotes?.[s.ticker] || {}), ...meta } };
+  }
+  const toTime = (t) => (typeof t === "number" ? (intraday ? t : new Date(t * 1000).toISOString().slice(0, 10)) : t);
+  const pts = bars.t.map((t, i) => ({ time: toTime(t), o: bars.o[i], h: bars.h[i], l: bars.l[i], c: bars.c[i], v: bars.v[i] }))
+    .filter((p, i, a) => p.c != null && (i === 0 || String(p.time) !== String(a[i - 1].time)));
+  if (!pts.length) return;
+  const closes = pts.map((p) => p.c);
+  const first = range === "1d" && meta?.prev_close ? meta.prev_close : closes[0];
+  const upMove = closes[closes.length - 1] >= first;
+
+  const el = $("#priceChart");
+  const c = makeChart("price", el, {
+    timeScale: { borderColor: css("--line"), timeVisible: intraday, secondsVisible: false,
+      tickMarkFormatter: (t) => (typeof t === "number" ? fmtTime(t, range === "1d" ? { hour: "2-digit", minute: "2-digit" } : { day: "2-digit", month: "2-digit", hour: "2-digit" }) : undefined) },
+    localization: { locale: "he-IL", timeFormatter: (t) => (typeof t === "number" ? fmtTime(t, { day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit" }) : typeof t === "string" ? t.split("-").reverse().join(".") : `${t.day}.${t.month}.${t.year}`) },
+    handleScroll: true, handleScale: true,
+  });
   if (!c) return;
-  const candles = ch.t.map((t, i) => ({ time: t, open: ch.o[i], high: ch.h[i], low: ch.l[i], close: ch.c[i] })).filter((x) => x.close != null);
-  const cs = c.addCandlestickSeries({ upColor: css("--bull"), downColor: css("--bear"), borderVisible: false, wickUpColor: css("--bull"), wickDownColor: css("--bear") });
-  cs.setData(candles);
+  let main;
+  if (state.ctype === "candles") {
+    main = c.addCandlestickSeries({ upColor: css("--bull"), downColor: css("--bear"), borderVisible: false, wickUpColor: css("--bull"), wickDownColor: css("--bear") });
+    main.setData(pts.map((p) => ({ time: p.time, open: p.o, high: p.h, low: p.l, close: p.c })));
+  } else {
+    const col = upMove ? css("--bull") : css("--bear");
+    main = c.addAreaSeries({ lineColor: col, topColor: upMove ? "rgba(34,197,94,.28)" : "rgba(240,82,82,.28)", bottomColor: "rgba(0,0,0,0)", lineWidth: 2 });
+    main.setData(pts.map((p) => ({ time: p.time, value: p.c })));
+  }
   const line = (vals, color, opts = {}) => {
-    const sr = c.addLineSeries(Object.assign({ color, lineWidth: 2, priceLineVisible: false, lastValueVisible: false, crosshairMarkerVisible: false }, opts));
-    sr.setData(ch.t.map((t, i) => ({ time: t, value: vals[i] })).filter((x) => x.value != null));
-    return sr;
+    const sr = c.addLineSeries(Object.assign({ color, lineWidth: 1.5, priceLineVisible: false, lastValueVisible: false, crosshairMarkerVisible: false }, opts));
+    sr.setData(pts.map((p, i) => ({ time: p.time, value: vals[i] })).filter((x) => x.value != null));
   };
-  line(ch.bb_up, css("--s1"));
-  line(ch.bb_mid, css("--s1"), { lineStyle: 2, lineWidth: 1 });
-  line(ch.bb_lo, css("--s1"));
-  line(ch.sma50, css("--s4"));
-  line(ch.sma200, css("--s6"));
+  if (state.showBB !== false && pts.length > 25) {
+    const bb = bbA(closes);
+    line(bb.map((x) => x[0]), css("--s1")); line(bb.map((x) => x[1]), css("--s1"), { lineStyle: 2, lineWidth: 1 }); line(bb.map((x) => x[2]), css("--s1"));
+  }
+  const showMA = !intraday && pts.length > 60;
+  if (showMA) { line(smaA(closes, 50), css("--s4")); if (pts.length > 200) line(smaA(closes, 200), css("--s6")); }
+  $("#legendBB").hidden = state.showBB === false;
+  $("#legendMA").hidden = !showMA;
   const vol = c.addHistogramSeries({ priceScaleId: "vol", priceFormat: { type: "volume" }, lastValueVisible: false, priceLineVisible: false });
-  c.priceScale("vol").applyOptions({ scaleMargins: { top: 0.82, bottom: 0 } });
-  vol.setData(ch.t.map((t, i) => ({ time: t, value: ch.v[i] || 0, color: ch.c[i] >= ch.o[i] ? "rgba(34,197,94,.35)" : "rgba(240,82,82,.35)" })));
+  c.priceScale("vol").applyOptions({ scaleMargins: { top: 0.84, bottom: 0 } });
+  vol.setData(pts.map((p) => ({ time: p.time, value: p.v || 0, color: p.c >= p.o ? "rgba(34,197,94,.3)" : "rgba(240,82,82,.3)" })));
+  if (range === "1d" && meta?.prev_close) main.createPriceLine({ price: meta.prev_close, color: css("--muted"), lineWidth: 1, lineStyle: 2, title: "סגירה קודמת" });
   const h = s.holding;
   if (h) {
-    if (h.stop_loss) cs.createPriceLine({ price: h.stop_loss, color: css("--bear"), lineWidth: 1, lineStyle: 2, title: "סטופ" });
-    if (h.take_profit) cs.createPriceLine({ price: h.take_profit, color: css("--bull"), lineWidth: 1, lineStyle: 2, title: "יעד" });
-    cs.createPriceLine({ price: h.avg_price, color: css("--text-2"), lineWidth: 1, lineStyle: 1, title: "ממוצע" });
-  } else if (s.sizing) {
-    cs.createPriceLine({ price: s.sizing.stop, color: css("--bear"), lineWidth: 1, lineStyle: 2, title: "סטופ מוצע" });
-    cs.createPriceLine({ price: s.sizing.target, color: css("--bull"), lineWidth: 1, lineStyle: 2, title: "יעד מוצע" });
+    if (h.stop_loss) main.createPriceLine({ price: h.stop_loss, color: css("--bear"), lineWidth: 1, lineStyle: 2, title: "סטופ" });
+    if (h.take_profit) main.createPriceLine({ price: h.take_profit, color: css("--bull"), lineWidth: 1, lineStyle: 2, title: "יעד" });
+    main.createPriceLine({ price: h.avg_price, color: css("--text-2"), lineWidth: 1, lineStyle: 1, title: "ממוצע" });
+  } else if (s.sizing?.stop && !intraday) {
+    main.createPriceLine({ price: s.sizing.stop, color: css("--bear"), lineWidth: 1, lineStyle: 2, title: "סטופ מוצע" });
+    main.createPriceLine({ price: s.sizing.target, color: css("--bull"), lineWidth: 1, lineStyle: 2, title: "יעד מוצע" });
   }
-  // signal markers on the last bar
-  const last = candles[candles.length - 1];
-  const markers = (s.signals || []).filter((g) => g.dir !== 0 && g.strength >= .6).slice(0, 2).map((g) => ({
-    time: last.time, position: g.dir > 0 ? "belowBar" : "aboveBar", color: g.dir > 0 ? css("--bull") : css("--bear"),
-    shape: g.dir > 0 ? "arrowUp" : "arrowDown", text: g.title.replace(/^[🛑🎯]\s*/u, "").slice(0, 18) }));
-  if (markers.length) cs.setMarkers(markers);
   c.timeScale().fitContent();
   c.subscribeCrosshairMove((p) => {
-    const d = p?.seriesData?.get(cs);
-    $("#ohlc").textContent = d ? `O ${nf(d.open)}  H ${nf(d.high)}  L ${nf(d.low)}  C ${nf(d.close)}` : "";
+    const i = p?.time != null ? pts.findIndex((x) => String(x.time) === String(p.time)) : -1;
+    if (i < 0) { $("#ohlc").textContent = ""; return; }
+    const x = pts[i], chg = (x.c / first - 1) * 100;
+    $("#ohlc").innerHTML = `<span dir="ltr">O ${nf(x.o)} H ${nf(x.h)} L ${nf(x.l)} C ${nf(x.c)}</span> <span class="${cls(chg)}">${pct(chg)}</span>`;
   });
 
-  const rc = makeChart("rsi", rel, { rightPriceScale: { borderColor: css("--line"), scaleMargins: { top: .1, bottom: .1 } } });
+  const rel = $("#rsiChart");
+  const rc = makeChart("rsi", rel, { rightPriceScale: { borderColor: css("--line"), scaleMargins: { top: .1, bottom: .1 } },
+    timeScale: { borderColor: css("--line"), visible: false }, handleScroll: false, handleScale: false });
+  if (!rc) return;
   const rs = rc.addLineSeries({ color: css("--s3"), lineWidth: 2, priceLineVisible: false });
-  rs.setData(ch.t.map((t, i) => ({ time: t, value: ch.rsi[i] })).filter((x) => x.value != null));
+  const rv = rsiA(closes);
+  rs.setData(pts.map((p, i) => ({ time: p.time, value: rv[i] })).filter((x) => x.value != null));
   rs.createPriceLine({ price: 70, color: css("--bear"), lineWidth: 1, lineStyle: 2, axisLabelVisible: false });
   rs.createPriceLine({ price: 30, color: css("--bull"), lineWidth: 1, lineStyle: 2, axisLabelVisible: false });
   rc.timeScale().fitContent();
-  // keep the two charts in sync
   c.timeScale().subscribeVisibleLogicalRangeChange((r) => r && rc.timeScale().setVisibleLogicalRange(r));
 }
 
@@ -1261,6 +1419,17 @@ $("#btnScan").onclick = async () => {
   if (state.cloud) setTimeout(() => $("#btnScan").classList.remove("busy"), 120000);
 };
 $("#btnSettings").onclick = () => state.d && settingsModal();
+document.addEventListener("click", (e) => {
+  const v = e.target.closest(".view-seg [data-view]");
+  if (!v) return;
+  state.view = v.dataset.view;
+  try { localStorage.setItem(VIEW_KEY, state.view); } catch (err) { /* private mode */ }
+  $$(".view-seg [data-view]").forEach((b) => b.classList.toggle("on", b.dataset.view === state.view));
+  renderHoldings(); renderOpps();
+});
+setInterval(fetchQuotes, 60 * 1000);
+document.querySelectorAll(".view-slot").forEach((el) => { el.innerHTML = viewToggleHTML(); });
+
 $("#digestNow").onclick = async () => {
   const r = await api("/api/scan?digest=1", { method: "POST" });
   toast(r.error ? { level: "warning", title: "לא ניתן לשלוח עכשיו", body: r.error }

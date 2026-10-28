@@ -12,6 +12,7 @@
 
 import { aiAccess, recordUsage, liveLookup, recommend, ask } from "./ai.js";
 import { CITIES, getShabbatMode, quietNow, quietWindows } from "./shabbat.js";
+import { history, quotes } from "./market.js";
 
 const ACTION_HE = { BUY: "קנייה", ADD: "הגדלה", HOLD: "החזקה", WATCH: "מעקב", AVOID: "להימנע", TRIM: "מימוש חלקי", SELL: "מכירה" };
 const LEVEL_EMOJI = { critical: "🔴", warning: "🟡", opportunity: "🟢", info: "🔵" };
@@ -356,6 +357,23 @@ async function api(request, env, ctx, url, path, user) {
       await Promise.all(["config", "dashboard", "stocks", "db", "push_subs", "alerts_read_ts", "llm_keys"].map((k) => env.RADAR.delete(`${k}:${id}`)));
       return json({ ok: true });
     }
+  }
+
+  // ---- live prices for the lists and chart history for any range
+  if (path === "/api/quotes") {
+    let syms = (url.searchParams.get("s") || "").split(",").map(norm).filter((t) => /^[A-Z0-9.^=-]{1,15}$/.test(t));
+    if (!syms.length) {
+      const cfg = await getConfig(env, uid);
+      syms = [...cfg.holdings.map((h) => h.ticker), ...cfg.watchlist.map((w) => w.ticker)];
+    }
+    return json(await quotes(syms));
+  }
+  if (path.startsWith("/api/chart/")) {
+    const t = norm(decodeURIComponent(path.split("/")[3]));
+    if (!/^[A-Z0-9.^=-]{1,15}$/.test(t)) return json({ error: "סימול לא תקין" }, 400);
+    const h = await history(t, url.searchParams.get("range") || "1d");
+    if (!h) return json({ error: "אין נתונים לטווח הזה" }, 404);
+    return json(h);
   }
 
   // ---- market data for this user (tracked → discovered → live lookup of any ticker)

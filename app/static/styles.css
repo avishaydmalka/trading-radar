@@ -425,3 +425,52 @@ input[type=email] { background: var(--bg); border: 1px solid var(--line-2); bord
 .sh-list { display: grid; gap: 4px; padding: 2px 4px; }
 .sh-row { display: flex; justify-content: space-between; gap: 8px; flex-wrap: wrap; padding: 6px 10px; border-radius: 9px; background: var(--card); font-size: 13px; }
 .sh-row.now { box-shadow: inset 0 0 0 1px #c9a24a; }
+
+/* ---------------- Investing-style lists */
+.qlist { display: grid !important; grid-template-columns: 1fr !important; gap: 0 !important; background: var(--bg); border: 1px solid var(--line); border-radius: 14px; overflow: hidden; }
+.qrow { display: grid; grid-template-columns: minmax(0, 1fr) auto auto; gap: 12px; align-items: center; padding: 12px 14px; border-bottom: 1px solid var(--line); cursor: pointer; transition: background .3s; }
+.qrow:last-child { border-bottom: 0; }
+.qrow:hover { background: var(--card); }
+.qrow.alarm { box-shadow: inset 3px 0 0 var(--bear); }
+.q-name { min-width: 0; }
+.q-name b { font-size: 16px; display: block; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.q-sub { font-size: 12.5px; color: var(--muted); margin-top: 2px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.q-sub .tkr { font-family: var(--mono); }
+.clk { color: var(--bear); font-weight: 700; }
+.clk.live { color: var(--bull); }
+.q-tags { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin-top: 6px; font-size: 12px; }
+.q-tags .action { padding: 2px 8px; font-size: 11.5px; }
+.q-pnl { font-weight: 600; }
+.q-spark { width: 80px; }
+.q-spark .h-spark { height: 30px; }
+.q-price { text-align: left; direction: ltr; min-width: 92px; }
+.q-price b { font-size: 18px; font-weight: 600; }
+.q-price div { font-size: 13px; margin-top: 2px; }
+.qrow.flash-up { animation: fUp 1.6s ease-out; }
+.qrow.flash-down { animation: fDown 1.6s ease-out; }
+@keyframes fUp { from { background: rgba(34,197,94,.22); } to { background: transparent; } }
+@keyframes fDown { from { background: rgba(240,82,82,.22); } to { background: transparent; } }
+.view-seg button { font-size: 14px; padding: 3px 9px; }
+@media (max-width: 680px) { .q-spark { display: none; } .qrow { grid-template-columns: minmax(0, 1fr) auto; padding: 12px; } }
+
+/* ---------------- stock screen (Investing-like) */
+.dt-ticker { font-family: "Heebo", system-ui, sans-serif; font-size: 22px; font-weight: 800; direction: rtl; text-align: right; }
+.dt-price { text-align: left; direction: rtl; min-width: 0; }
+.dp-main { display: flex; align-items: center; gap: 6px; justify-content: flex-end; direction: ltr; }
+.dp-main b { font-size: 28px; font-weight: 800; }
+.dp-arrow { font-size: 20px; }
+.dp-chg { font-size: 15px; font-weight: 600; text-align: left; direction: ltr; }
+.dp-when { font-size: 12px; color: var(--muted); text-align: left; white-space: nowrap; }
+.dtabs { display: flex; gap: 4px; border-bottom: 1px solid var(--line); position: sticky; top: 0; z-index: 3; background: var(--bg-2); overflow-x: auto; scrollbar-width: none; }
+.dtabs button { flex: 1 0 auto; background: transparent; border: 0; border-bottom: 3px solid transparent; padding: 11px 12px; cursor: pointer; color: var(--text-2); font-size: 15px; font-weight: 600; }
+.dtabs button.on { color: var(--text); border-bottom-color: var(--accent); }
+.dpane { display: none; gap: 14px; }
+.dpane.on { display: grid; }
+.range-bar { display: flex; flex-wrap: wrap; align-items: center; gap: 4px; margin-top: 10px; direction: ltr; }
+.range-bar button { background: transparent; border: 0; border-radius: 8px; padding: 6px 10px; font-family: var(--mono); font-weight: 600; font-size: 14px; color: var(--text-2); cursor: pointer; }
+.range-bar button.on { background: var(--card-2); color: var(--text); box-shadow: inset 0 0 0 1px var(--line-2); }
+.range-bar .ctype { font-family: "Heebo", sans-serif; font-size: 13px; border: 1px solid var(--line-2); }
+.range-bar .ctype.on { border-color: var(--s1); color: var(--text); }
+.rb-sep { flex: 1; }
+.chart-panel .price-chart { height: 320px; }
+@media (max-width: 680px) { .chart-panel .price-chart { height: 260px; } .range-bar button { padding: 6px 8px; } .dp-main b { font-size: 24px; } }
