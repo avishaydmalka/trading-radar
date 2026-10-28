@@ -141,7 +141,7 @@ function renderStatus(s) {
   if (state.cloud) {
     const auto = state.d?.auto;
     const nextTxt = auto?.next ? ` · סריקה אוטומטית הבאה ~${new Date(auto.next).toLocaleTimeString("he-IL", { hour: "2-digit", minute: "2-digit" })}` : "";
-    $("#scanInfo").textContent = `עודכן ${ago(s.last_scan)} (${last})${nextTxt}` + (s.last_error ? " · ⚠ שגיאה" : "") + (auto && auto.ok === false ? " · ⚠ התזמון האוטומטי נכשל" : "");
+    $("#scanInfo").textContent = `עודכן ${ago(s.last_scan)} (${last})${nextTxt}` + (s.last_error ? " · ⚠ שגיאה" : "") + (auto && auto.ok === false ? ` · ⚠ ${auto.error || "התזמון האוטומטי נכשל"}` : "");
     return;
   }
   const next = s.next_scan ? Math.max(0, Math.round((s.next_scan - Date.now() / 1000) / 60)) : null;

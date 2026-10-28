@@ -618,7 +618,10 @@ function autoInterval(env, ms) {
 }
 
 async function autoScan(env, now) {
-  if (!env.GH_DISPATCH_TOKEN || !env.GITHUB_REPO) return;
+  if (!env.GH_DISPATCH_TOKEN || !env.GITHUB_REPO) {
+    await env.RADAR.put("auto_state", JSON.stringify({ ok: false, checked: now, error: "חסר הסוד GH_DISPATCH_TOKEN – בלעדיו אין סריקות אוטומטיות" }));
+    return;
+  }
   const st = (await env.RADAR.get("auto_state", "json")) || {};
   const every = autoInterval(env, now);
   if (st.last && now - st.last < (every - 2) * 60_000) return; // not due yet (2 min slack for the 10‑min cron)
