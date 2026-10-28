@@ -80,6 +80,7 @@ function showSections(on) {
 }
 
 async function load() {
+  state.lastLoad = Date.now();
   const d = await api("/api/dashboard");
   if (d.__auth === false) return;
   renderMe(d.me);
@@ -113,6 +114,7 @@ function render() {
   $("#demoBanner").hidden = !d.demo;
   renderStatus(d.status);
   renderKPIs(d);
+  renderDigest(d.digest);
   renderBrief(d.brief, d.indices);
   renderAlerts();
   renderBasketFilter();
@@ -137,7 +139,9 @@ function renderStatus(s) {
     <span class="mkt ${m.tase}"><i></i>ת״א · ${name[m.tase] || "—"}</span>`;
   const last = s.last_scan ? new Date(s.last_scan * 1000).toLocaleTimeString("he-IL", { hour: "2-digit", minute: "2-digit" }) : "—";
   if (state.cloud) {
-    $("#scanInfo").textContent = `עודכן ${ago(s.last_scan)} (${last})` + (s.last_error ? " · ⚠ שגיאה" : "");
+    const auto = state.d?.auto;
+    const nextTxt = auto?.next ? ` · סריקה אוטומטית הבאה ~${new Date(auto.next).toLocaleTimeString("he-IL", { hour: "2-digit", minute: "2-digit" })}` : "";
+    $("#scanInfo").textContent = `עודכן ${ago(s.last_scan)} (${last})${nextTxt}` + (s.last_error ? " · ⚠ שגיאה" : "") + (auto && auto.ok === false ? " · ⚠ התזמון האוטומטי נכשל" : "");
     return;
   }
   const next = s.next_scan ? Math.max(0, Math.round((s.next_scan - Date.now() / 1000) / 60)) : null;
@@ -391,6 +395,20 @@ function renderOpps() {
       <div class="sig-row">${sigChips(o.signals) || `<span class="muted small">אין איתות בולט</span>`}</div>
     </div>`;
   }).join("") : `<div class="empty">הוסף מניות לרשימת המעקב כדי לקבל הזדמנויות</div>`;
+}
+
+function renderDigest(dg) {
+  const sec = $("#digestSec");
+  if (!dg || !state.cloud) { sec.hidden = true; return; }
+  sec.hidden = false;
+  $("#digestMeta").textContent = `${dg.title || ""} · ${ago(dg.ts)}`;
+  $("#digestBody").innerHTML = (dg.sections || []).map((s) => `<div class="dg-sec"><h3>${esc(s.title)}</h3>
+    ${(s.rows || []).map((r) => `<div class="dg-row" data-ticker="${esc(r.ticker)}">
+      <span class="tk">${esc(r.ticker)}</span><span class="action act-${r.action}">${ACTION_HE[r.action] || r.action}</span>
+      <span class="dg-why">${esc(r.why || "")}${r.entry ? `<span class="dg-plan">כניסה <b class="num">${nf(r.entry)}</b> · סטופ <b class="num down">${nf(r.stop)}</b> · יעד <b class="num up">${nf(r.target)}</b></span>` : ""}</span>
+      <span class="num ${cls(r.pnl_pct ?? r.score)}">${r.pnl_pct != null ? pct(r.pnl_pct, 1) : signed(r.score)}</span></div>`).join("")}
+    ${s.hold?.length ? `<div class="muted small dg-hold">⚪ להחזיק: ${s.hold.map(esc).join(", ")}</div>` : ""}</div>`).join("")
+    || `<div class="empty">אין עדיין המלצות</div>`;
 }
 
 function renderDiscovery() {
@@ -1212,6 +1230,16 @@ $("#btnScan").onclick = async () => {
   if (state.cloud) setTimeout(() => $("#btnScan").classList.remove("busy"), 120000);
 };
 $("#btnSettings").onclick = () => state.d && settingsModal();
+$("#digestNow").onclick = async () => {
+  const r = await api("/api/scan?digest=1", { method: "POST" });
+  toast(r.error ? { level: "warning", title: "לא ניתן לשלוח עכשיו", body: r.error }
+    : r.status === "busy" ? { level: "info", title: "סריקה כבר רצה", body: "נסה שוב בעוד דקה" }
+    : { level: "opportunity", title: "מכין סיכום המלצות", body: "יגיע לטלגרם ויופיע כאן בעוד כ‑2–3 דקות" });
+};
+// refresh as soon as the app comes back to the foreground (phones pause timers in the background)
+document.addEventListener("visibilitychange", () => { if (!document.hidden && state.cloud && !loginShown) load(); });
+window.addEventListener("focus", () => { if (state.cloud && !loginShown && Date.now() - (state.lastLoad || 0) > 20000) load(); });
+
 $("#searchForm").onsubmit = (e) => {
   e.preventDefault();
   const t = $("#searchInput").value.trim();

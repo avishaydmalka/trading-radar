@@ -29,6 +29,12 @@ const json = (data, status = 200, headers = {}) =>
   new Response(JSON.stringify(data), { status, headers: { "content-type": "application/json; charset=utf-8", "cache-control": "no-store", ...headers } });
 
 export default {
+  /** Cloudflare cron (every 10 min): start the scanner in GitHub on a steady cadence.
+   *  GitHub's own scheduler skips many runs on the free tier, so the clock lives here. */
+  async scheduled(event, env, ctx) {
+    ctx.waitUntil(autoScan(env, event.scheduledTime || Date.now()));
+  },
+
   async fetch(request, env, ctx) {
     const url = new URL(request.url);
     let path = url.pathname;
@@ -447,7 +453,7 @@ async function api(request, env, ctx, url, path, user) {
 
   // ---- scans / alerts / push
   if (path === "/api/scan" && m === "POST") {
-    const r = await dispatchScan(env, uid, url.searchParams.get("llm") === "1", true);
+    const r = await dispatchScan(env, uid, url.searchParams.get("llm") === "1", true, url.searchParams.get("digest") === "1");
     return json(r, r.error ? 400 : 200);
   }
   if (path === "/api/alerts/read" && m === "POST") {
@@ -594,11 +600,41 @@ async function dashboard(env, user) {
   d.alerts.forEach((a) => { a.read = a.ts <= read ? 1 : 0; });
   d.unread = d.alerts.filter((a) => !a.read).length;
   d.features = { ...d.features, ...features };
+  d.auto = await kvJSON(env, "auto_state");
   return d;
 }
 
 /* ------------------------------------------------------------------ GitHub dispatch */
-async function dispatchScan(env, uid, forceLlm, manual = false) {
+/* ------------------------------------------------------------------ automatic scans */
+function marketHours(ms) {
+  const d = new Date(ms);
+  const day = d.getUTCDay(), min = d.getUTCHours() * 60 + d.getUTCMinutes();
+  // Mon–Fri, 06:30–21:15 UTC = 08:30–23:15 Israel: covers TASE and Wall Street incl. the close
+  return day >= 1 && day <= 5 && min >= 6 * 60 + 30 && min <= 21 * 60 + 15;
+}
+
+function autoInterval(env, ms) {
+  return marketHours(ms) ? +(env.SCAN_EVERY_MIN || 30) : +(env.OFFHOURS_EVERY_MIN || 120);
+}
+
+async function autoScan(env, now) {
+  if (!env.GH_DISPATCH_TOKEN || !env.GITHUB_REPO) return;
+  const st = (await env.RADAR.get("auto_state", "json")) || {};
+  const every = autoInterval(env, now);
+  if (st.last && now - st.last < (every - 2) * 60_000) return; // not due yet (2 min slack for the 10‑min cron)
+  const r = await fetch(`https://api.github.com/repos/${env.GITHUB_REPO}/actions/workflows/scan.yml/dispatches`, {
+    method: "POST",
+    headers: { Authorization: `Bearer ${env.GH_DISPATCH_TOKEN}`, Accept: "application/vnd.github+json", "User-Agent": "trading-radar", "X-GitHub-Api-Version": "2022-11-28" },
+    body: JSON.stringify({ ref: env.GITHUB_BRANCH || "main", inputs: { force_llm: "0", only_user: "" } }),
+  }).catch((e) => ({ ok: false, status: 0, text: async () => String(e) }));
+  const ok = r.ok;
+  await env.RADAR.put("auto_state", JSON.stringify({
+    last: ok ? now : st.last || 0, next: (ok ? now : st.last || now) + autoInterval(env, now + every * 60_000) * 60_000,
+    every, ok, error: ok ? "" : `GitHub ${r.status}: ${(await r.text()).slice(0, 120)}`, checked: now,
+  }));
+}
+
+async function dispatchScan(env, uid, forceLlm, manual = false, digest = false) {
   if (!env.GH_DISPATCH_TOKEN || !env.GITHUB_REPO) return { error: "כפתור הסריקה לא מוגדר (GH_DISPATCH_TOKEN)", status: "disabled" };
   const key = `last_dispatch:${uid}`;
   const last = +((await env.RADAR.get(key)) || 0);
@@ -607,7 +643,7 @@ async function dispatchScan(env, uid, forceLlm, manual = false) {
   const r = await fetch(`https://api.github.com/repos/${env.GITHUB_REPO}/actions/workflows/scan.yml/dispatches`, {
     method: "POST",
     headers: { Authorization: `Bearer ${env.GH_DISPATCH_TOKEN}`, Accept: "application/vnd.github+json", "User-Agent": "trading-radar", "X-GitHub-Api-Version": "2022-11-28" },
-    body: JSON.stringify({ ref: env.GITHUB_BRANCH || "main", inputs: { force_llm: forceLlm ? "1" : "0", only_user: uid } }),
+    body: JSON.stringify({ ref: env.GITHUB_BRANCH || "main", inputs: { force_llm: forceLlm ? "1" : "0", only_user: uid, send_digest: digest ? "1" : "0" } }),
   });
   if (!r.ok) return { error: `GitHub ${r.status}: ${(await r.text()).slice(0, 150)}` };
   return { status: "started" };
@@ -620,20 +656,20 @@ async function housekeeping(env, url) {
   if (!env.TELEGRAM_BOT_TOKEN) return;
   const hook = await kvJSON(env, "tg_hook", {});
   const want = `${origin}/telegram/`;
-  if (hook.base === want && hook.secret) return;
+  if (hook.base === want && hook.secret && hook.v === 3) return;
   const secret = crypto.randomUUID().replace(/-/g, "");
   const r = await fetch(`https://api.telegram.org/bot${env.TELEGRAM_BOT_TOKEN}/setWebhook`, {
     method: "POST", headers: { "content-type": "application/json" },
     body: JSON.stringify({ url: want + secret, allowed_updates: ["message"], secret_token: secret }),
   });
   if (r.ok) {
-    await putJSON(env, "tg_hook", { base: want, secret });
+    await putJSON(env, "tg_hook", { base: want, secret, v: 3 });
     await fetch(`https://api.telegram.org/bot${env.TELEGRAM_BOT_TOKEN}/setMyCommands`, {
       method: "POST", headers: { "content-type": "application/json" },
       body: JSON.stringify({ commands: [
         { command: "portfolio", description: "מצב התיק" }, { command: "top", description: "הזדמנויות מובילות" },
         { command: "stock", description: "ניתוח מניה: /stock NVDA" }, { command: "ask", description: "שאל על מניה: /ask NVDA שאלה" },
-        { command: "discover", description: "TOP 5 הזדמנויות חדשות" }, { command: "brief", description: "תדריך שוק" },
+        { command: "discover", description: "TOP 5 הזדמנויות חדשות" }, { command: "digest", description: "סיכום המלצות עכשיו" }, { command: "brief", description: "תדריך שוק" },
         { command: "alerts", description: "התראות אחרונות" }, { command: "scan", description: "סריקה עכשיו" } ] }),
     });
   }
@@ -655,7 +691,7 @@ const esc = (s) => String(s ?? "").replace(/[&<>]/g, (c) => ({ "&": "&amp;", "<"
 const f2 = (v, d = 2) => (v == null || isNaN(v) ? "—" : Number(v).toLocaleString("en-US", { minimumFractionDigits: d, maximumFractionDigits: d }));
 const sg = (v, d = 0) => (v == null ? "—" : (v > 0 ? "+" : "") + f2(v, d));
 
-const HELP = "<b>רדאר מסחר – פקודות</b>\n/portfolio – מצב התיק\n/top – הזדמנויות ברשימת המעקב\n/discover – TOP 5 הזדמנויות חדשות\n/stock TICKER – ניתוח מניה (כל מניה)\n/ask TICKER שאלה – שאל על מניה\n/brief – תדריך שוק\n/alerts – התראות אחרונות\n/scan – סריקה עכשיו";
+const HELP = "<b>רדאר מסחר – פקודות</b>\n/portfolio – מצב התיק\n/top – הזדמנויות ברשימת המעקב\n/discover – TOP 5 הזדמנויות חדשות\n/digest – סיכום המלצות עכשיו\n/stock TICKER – ניתוח מניה (כל מניה)\n/ask TICKER שאלה – שאל על מניה\n/brief – תדריך שוק\n/alerts – התראות אחרונות\n/scan – סריקה עכשיו";
 
 async function telegramWebhook(request, env, ctx, secret) {
   const hook = await kvJSON(env, "tg_hook", {});
@@ -679,13 +715,17 @@ async function telegramWebhook(request, env, ctx, secret) {
 
   let reply = HELP;
   const d = await dashboard(env, user);
-  if (d.empty && !["scan", "ask", "stock", "discover"].includes(cmd)) reply = "אין עדיין נתונים לתיק שלך – הוסף מניות בדשבורד והמתן לסריקה.";
+  if (d.empty && !["scan", "ask", "stock", "discover", "digest"].includes(cmd)) reply = "אין עדיין נתונים לתיק שלך – הוסף מניות בדשבורד והמתן לסריקה.";
   else if (cmd === "portfolio") reply = tgPortfolio(d);
   else if (cmd === "top") reply = tgTop(d);
   else if (cmd === "brief") reply = tgBrief(d);
   else if (cmd === "alerts") reply = tgAlerts(d);
   else if (cmd === "stock") reply = await tgStock(env, user, norm(arg));
   else if (cmd === "discover") reply = tgDiscover(d);
+  else if (cmd === "digest") {
+    const r = await dispatchScan(env, user.id, false, true, true);
+    reply = r.error ? `⚠️ ${esc(r.error)}` : r.status === "busy" ? "סריקה כבר רצה – הסיכום יגיע בסיומה או בסבב הבא." : "📋 מכין סיכום המלצות מעודכן – יגיע לכאן בעוד כ‑2–3 דקות.";
+  }
   else if (cmd === "ask") {
     const [tk, ...qs] = arg.split(/\s+/);
     const q = qs.join(" ").trim();

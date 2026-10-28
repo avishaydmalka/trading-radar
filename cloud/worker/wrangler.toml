@@ -13,7 +13,12 @@ run_worker_first = true          # every request passes the password check first
 binding = "RADAR"
 id = "__KV_NAMESPACE_ID__"       # replaced from the KV_NAMESPACE_ID GitHub secret during deploy
 
+[triggers]
+crons = ["*/10 * * * *"]       # automatic scans (cadence: SCAN_EVERY_MIN / OFFHOURS_EVERY_MIN)
+
 [vars]
 DASHBOARD_USER = "admin"
+SCAN_EVERY_MIN = "30"          # during market hours (Mon–Fri 08:30–23:15 Israel)
+OFFHOURS_EVERY_MIN = "120"     # nights and weekends
 GITHUB_BRANCH = "main"
 ALPACA_BASE_URL = "https://paper-api.alpaca.markets"

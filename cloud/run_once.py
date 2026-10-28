@@ -280,6 +280,71 @@ def scan_user(kv: KV, user: dict, force: bool, vapid: dict, public_url: str, llm
     return {**result, "tickers_list": sorted(stocks), "llm_requests": llm.calls, "llm_info": llm_info}
 
 
+def send_digests(kv: KV, users: list[dict], only: str, vapid: dict) -> None:
+    from app import digest
+    from app.notify import telegram
+
+    force = os.environ.get("FORCE_DIGEST") == "1"
+    disc_items = (kv.get_json("discovery") or {}).get("items", [])
+    sent = kv.get_json("digest_sent") or {}
+    changed = False
+    for u in users:
+        uid = u["id"]
+        if only and uid != only:
+            continue
+        slot = digest.due_slot(sent.get(uid) or {})
+        if force:
+            slot = (f"manual:{int(time.time())}", "📋 סיכום המלצות עדכני")
+        if not slot:
+            continue
+        dash = kv.get_json(f"dashboard:{uid}")
+        if not dash or not (dash.get("holdings") or dash.get("opportunities") or disc_items):
+            continue
+        key, title = slot
+        text, card = digest.build(dash, title, disc_items)
+        chat = str(u.get("telegram_chat_id") or (os.environ.get("TELEGRAM_CHAT_ID", "").strip() if u.get("is_admin") else ""))
+        tg_ok = False
+        if telegram.settings.TELEGRAM_BOT_TOKEN and chat:
+            try:
+                telegram.send_text(text, chat_id=chat)
+                tg_ok = True
+            except Exception as exc:  # noqa: BLE001
+                log.warning("digest telegram %s: %s", uid, exc)
+        dash["digest"] = card
+        kv.put_json(f"dashboard:{uid}", dash)
+        _push(kv, uid, vapid, {"title": f"📋 {title}", "body": "המלצות מעודכנות לתיק, לרשימת המעקב ו‑TOP 5 – הקש לצפייה", "url": "/#digest", "tag": "digest"})
+        user_sent = {k: v for k, v in (sent.get(uid) or {}).items() if v > time.time() - 3 * 86400}
+        user_sent[key] = time.time()
+        sent[uid] = user_sent
+        changed = True
+        log.info("digest %s → %s (telegram=%s)", title, u.get("name") or uid, tg_ok)
+    if changed:
+        kv.put_json("digest_sent", sent)
+
+
+def _push(kv: KV, uid: str, vapid: dict, payload: dict) -> None:
+    subs = kv.get_json(f"push_subs:{uid}") or []
+    if not subs:
+        return
+    try:
+        from pywebpush import WebPushException, webpush
+    except ImportError:
+        return
+    alive = []
+    for sub in subs:
+        try:
+            webpush(subscription_info=sub, data=json.dumps(payload, ensure_ascii=False), vapid_private_key=vapid["private"],
+                    vapid_claims={"sub": "mailto:radar@example.com"}, ttl=6 * 3600)
+            alive.append(sub)
+        except WebPushException as exc:
+            if getattr(getattr(exc, "response", None), "status_code", None) not in (404, 410):
+                alive.append(sub)
+        except Exception:  # noqa: BLE001
+            alive.append(sub)
+    if len(alive) != len(subs):
+        kv.put_json(f"push_subs:{uid}", alive)
+
+
 def main() -> int:
     t0 = time.time()
     kv = KV()
@@ -371,6 +436,12 @@ def main() -> int:
                               f"top: {', '.join(i['ticker'] for i in res['items'][:5])} (scanned {res['scanned']})"))
         except Exception:  # noqa: BLE001
             log.exception("discovery failed")
+
+    # ---- Hebrew recommendation digest: Telegram + push + a card in the app (3x per trading day)
+    try:
+        send_digests(kv, users, only, vapid)
+    except Exception:  # noqa: BLE001
+        log.exception("digest failed")
 
     # merge: keep requests the Worker counted while this run was going
     latest = kv.get_json("llm_usage") or {}

@@ -399,3 +399,15 @@ input[type=email] { background: var(--bg); border: 1px solid var(--line-2); bord
 .tgt-mean { position: absolute; top: -4px; bottom: -4px; width: 3px; border-radius: 2px; background: var(--ai); transform: translateX(-50%); }
 .yf-panel table.t td { white-space: nowrap; }
 .yf-panel table.t { display: block; overflow-x: auto; }
+
+/* ---------------- digest */
+.dg-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 12px; }
+.dg-sec { background: var(--bg); border: 1px solid var(--line); border-radius: 12px; padding: 10px 12px; display: grid; gap: 6px; align-content: start; min-width: 0; }
+.dg-sec h3 { margin: 0 0 4px; font-size: 14px; color: var(--text-2); }
+.dg-row { display: grid; grid-template-columns: auto auto 1fr auto; gap: 8px; align-items: center; padding: 6px 4px; border-radius: 8px; cursor: pointer; font-size: 13px; }
+.dg-row:hover { background: var(--card); }
+.dg-why { min-width: 0; color: var(--text-2); overflow-wrap: anywhere; }
+.dg-plan { display: block; font-size: 12px; color: var(--muted); margin-top: 2px; }
+.dg-plan b { font-weight: 600; }
+.dg-hold { padding: 4px; }
+@media (max-width: 680px) { .dg-row { grid-template-columns: auto auto 1fr; } .dg-row > .num { display: none; } }
