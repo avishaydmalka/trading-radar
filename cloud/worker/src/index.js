@@ -10,7 +10,7 @@
  *          backtests (shared), vapid, public_url, tg_hook, session_key, fail:<uid>
  */
 
-import { aiAccess, recordUsage, liveLookup, recommend, ask } from "./ai.js";
+import { aiAccess, recordUsage, liveLookup, recommend, ask, fetchArticle, articleSummary } from "./ai.js";
 import { CITIES, getShabbatMode, quietNow, quietWindows } from "./shabbat.js";
 import { history, quotes } from "./market.js";
 
@@ -422,6 +422,28 @@ async function api(request, env, ctx, url, path, user) {
     await recordUsage(env, user, access, r.requests, "qa");
     if (r.error) return json({ error: `ה‑AI לא ענה כרגע (${r.error.slice(0, 160)})` }, 502);
     return json({ answer: r.answer, provider: r.provider, mode: access.mode });
+  }
+  // ---- full article behind a news alert: read it and give a Hebrew summary (cached per article)
+  if (path === "/api/article" && m === "POST") {
+    let link;
+    try { link = new URL(clean(body.url)); } catch { return json({ error: "קישור לא תקין" }, 400); }
+    if (!/^https?:$/.test(link.protocol)) return json({ error: "קישור לא תקין" }, 400);
+    const ck = "article:" + [...new Uint8Array(await crypto.subtle.digest("SHA-1", new TextEncoder().encode(link.href)))].map((b) => b.toString(16).padStart(2, "0")).join("").slice(0, 24);
+    const hit = await env.RADAR.get(ck, "json");
+    if (hit) return json({ ...hit, cached: true });
+    const art = await fetchArticle(link.href).catch((e) => ({ error: String(e).slice(0, 120) }));
+    if (art.error || !art.text || art.text.length < 300) {
+      return json({ error: "לא הצלחנו לקרוא את הכתבה מהאתר (ייתכן שהיא חסומה או בתשלום) – אפשר לפתוח את המקור", url: link.href }, 422);
+    }
+    const users = await getUsers(env);
+    const access = await aiAccess(env, user, users);
+    if (access.error) return json({ error: access.error, url: link.href }, 429);
+    const r = await articleSummary(env, access.keys, { text: art.text, title: clean(body.title) || art.title, ticker: norm(body.ticker || "") });
+    await recordUsage(env, user, access, r.requests, "article");
+    if (r.error) return json({ error: `ה‑AI לא ענה כרגע (${r.error.slice(0, 160)})`, url: link.href }, 502);
+    const out = { summary: r.summary, provider: r.provider, url: art.final_url || link.href, source_title: art.title };
+    await env.RADAR.put(ck, JSON.stringify(out), { expirationTtl: 14 * 86400 });
+    return json(out);
   }
   if (path === "/api/backtest") {
     const t = norm(url.searchParams.get("ticker"));

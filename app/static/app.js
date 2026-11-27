@@ -225,14 +225,47 @@ function alertHTML(a, isNew = false) {
   const t = new Date(a.ts * 1000);
   const time = t.toLocaleTimeString("he-IL", { hour: "2-digit", minute: "2-digit" });
   const day = t.toDateString() === new Date().toDateString() ? "" : t.toLocaleDateString("he-IL", { day: "2-digit", month: "2-digit" }) + " ";
-  return `<li class="alert lv-${a.level} ${isNew ? "new" : ""}" data-ticker="${esc(a.ticker || "")}">
+  return `<li class="alert lv-${a.level} ${isNew ? "new" : ""}" data-aid="${esc(String(a.id ?? ""))}" role="button" tabindex="0">
     <div class="ico">${LEVEL[a.level]?.ico || "•"}</div>
     <div><div class="t">${a.ticker ? `<span class="tk">${esc(a.ticker)}</span> ` : ""}${esc(a.title)}</div>
       <div class="b">${esc(a.body)}</div>
       ${a.data?.sizing ? `<div class="chips"><span class="chip">כניסה ${nf(a.data.sizing.entry)}</span><span class="chip bear">סטופ ${nf(a.data.sizing.stop)}</span><span class="chip bull">יעד ${nf(a.data.sizing.target)}</span><span class="chip">${a.data.sizing.shares} יח׳</span></div>` : ""}
     </div>
-    <div class="time">${day}${time}${a.score != null ? `<div class="num ${cls(a.score)}">${signed(a.score)}</div>` : ""}</div>
+    <div class="time">${day}${time}${a.score != null ? `<div class="num ${cls(a.score)}">${signed(a.score)}</div>` : ""}<div class="more">פרטים ›</div></div>
   </li>`;
+}
+
+/* ------------------------------------------------------------------ alert details (full report) */
+function findAlert(id) {
+  return (state.d?.alerts || []).find((a) => String(a.id) === String(id));
+}
+function openAlert(a) {
+  if (!a) return;
+  const url = a.data?.url;
+  const t = new Date(a.ts * 1000).toLocaleString("he-IL", { day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit" });
+  const sz = a.data?.sizing;
+  modal(`${LEVEL[a.level]?.ico || ""} ${a.title}`, `
+    <div class="al-detail">
+      <div class="al-meta muted small">${a.ticker ? `<span class="tk">${esc(a.ticker)}</span> ${esc(hebName(a.ticker, ""))} · ` : ""}${esc(t)}${a.score != null ? ` · ציון <b class="num ${cls(a.score)}">${signed(a.score)}</b>` : ""}</div>
+      <p class="al-body">${esc(a.body || "")}</p>
+      ${sz ? `<div class="chips"><span class="chip">כניסה ${nf(sz.entry)}</span><span class="chip bear">סטופ ${nf(sz.stop)}</span><span class="chip bull">יעד ${nf(sz.target)}</span><span class="chip">${sz.shares} יח׳</span></div>` : ""}
+      ${url ? `<div class="al-article" id="alArticle"><div class="muted small">⏳ קורא את הכתבה ומתרגם לעברית…</div></div>` : ""}
+      <div class="al-actions">
+        ${url ? `<a class="btn" href="${esc(url)}" target="_blank" rel="noopener">🔗 לכתבה המקורית</a>` : ""}
+        ${a.ticker ? `<button class="btn primary" id="alOpenStock">📊 פתח את ${esc(hebName(a.ticker, a.ticker))}</button>` : ""}
+      </div>
+    </div>`);
+  $("#alOpenStock")?.addEventListener("click", () => { closeModal(); openStock(a.ticker); });
+  if (url) loadArticle(a);
+}
+async function loadArticle(a) {
+  const box = $("#alArticle");
+  const r = await api("/api/article", { method: "POST", body: { url: a.data.url, title: a.body, ticker: a.ticker } });
+  if (!box || !box.isConnected) return;
+  if (r.error) { box.innerHTML = `<div class="muted small">⚠️ ${esc(r.error)}</div>`; return; }
+  const lines = esc(r.summary || "").split("\n").map((l) => l.trim()).filter(Boolean)
+    .map((l) => /^(כותרת|תקציר|נקודות עיקריות|משמעות למשקיע)\s*:/.test(l) ? `<p><b>${l.replace(/:.*$/, ":")}</b>${l.replace(/^[^:]*:/, "")}</p>` : `<p>${l}</p>`).join("");
+  box.innerHTML = `<div class="al-sum-h">📰 הכתבה המלאה – תרגום ותקציר בעברית</div>${lines}<div class="muted small">סוכם ע״י AI · ${esc(r.provider || "")}</div>`;
 }
 
 function renderAlerts() {
@@ -1440,6 +1473,8 @@ function connectStream() {
 
 /* ------------------------------------------------------------------ events */
 document.addEventListener("click", (e) => {
+  const al = e.target.closest(".alert[data-aid]");
+  if (al && !e.target.closest("a, button")) { openAlert(findAlert(al.dataset.aid)); return; }
   const t = e.target.closest("[data-ticker]");
   if (t && t.dataset.ticker && !e.target.closest("a, button")) openStock(t.dataset.ticker);
   if (e.target.closest("[data-close]")) closeDrawer();
@@ -1501,6 +1536,7 @@ $("#btnBell").onclick = async () => {
   if (state.cloud) { if (!state.poll) state.poll = setInterval(load, 60 * 1000); } else if (state.d) connectStream();
   setInterval(() => state.d && renderStatus(state.d.status), 30000);
   if (!STATIC && !state.cloud) setInterval(load, 5 * 60 * 1000);
-  const t = new URLSearchParams(location.search).get("ticker");
-  if (t) openStock(t);
+  const qp = new URLSearchParams(location.search), t = qp.get("ticker"), aid = qp.get("alert");
+  if (aid && findAlert(aid)) openAlert(findAlert(aid));
+  else if (t) openStock(t);
 })();

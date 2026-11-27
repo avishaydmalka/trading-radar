@@ -480,3 +480,14 @@ input[type=email] { background: var(--bg); border: 1px solid var(--line-2); bord
 .rp-num { direction: ltr; unicode-bidi: isolate; } .rp-main b { font-size: 20px; } .rp-lbl { color: var(--text-2); font-size: 13px; font-weight: 600; }
 .chart-panel .price-chart { height: 320px; }
 @media (max-width: 680px) { .chart-panel .price-chart { height: 260px; } .range-bar button { padding: 6px 4px; } .range-bar button[data-range] { min-width: 0; flex: 1; } .range-bar .rb-sep { flex-basis: 100%; height: 0; } .dp-main b { font-size: 24px; } }
+
+/* alert details */
+.alert[data-aid] { cursor: pointer; }
+.alert .more { margin-top: 6px; font-size: 11.5px; color: var(--accent, #7aa2ff); white-space: nowrap; }
+.al-detail { display: grid; gap: 12px; }
+.al-body { margin: 0; font-size: 15.5px; line-height: 1.6; }
+.al-article { background: var(--card-2); border-radius: 12px; padding: 12px 14px; line-height: 1.65; }
+.al-article p { margin: 0 0 8px; }
+.al-sum-h { font-weight: 700; margin-bottom: 8px; }
+.al-actions { display: flex; gap: 8px; flex-wrap: wrap; }
+.al-actions .btn { flex: 1; text-align: center; text-decoration: none; justify-content: center; }

@@ -78,7 +78,7 @@ def send_alert(alert: dict, dedupe_key: str | None = None, cooldown_hours: float
             "title": f"{LEVEL_EMOJI.get(stored['level'], '')} {stored['title']}",
             "body": stored.get("body", "")[:180],
             "tag": f"{stored.get('ticker')}-{stored['kind']}",
-            "url": f"/?ticker={stored.get('ticker') or ''}",
+            "url": f"/?alert={stored.get('id')}" if (stored.get("data") or {}).get("url") else f"/?ticker={stored.get('ticker') or ''}",
         })
     except Exception as exc:  # noqa: BLE001
         log.warning("webpush failed: %s", exc)

@@ -307,3 +307,37 @@ export async function ask(env, keys, snap, question, history = [], extra = {}) {
   const r = await llmCall(env, keys, { system: SYSTEM_QA, prompt });
   return { answer: r.text, provider: r.provider, requests: r.requests, error: r.text ? null : r.error };
 }
+
+/* ------------------------------------------------------------------ full article → Hebrew */
+const SYSTEM_ARTICLE = "אתה עורך חדשות כלכליות. קיבלת טקסט של כתבה (לרוב באנגלית). כתוב בעברית בלבד, בפורמט הבא:\n" +
+  "כותרת: <כותרת בעברית>\nתקציר: <3–5 משפטים שמסבירים מה קרה>\nנקודות עיקריות:\n• ...\n• ...\nמשמעות למשקיע: <1–2 משפטים על ההשפעה האפשרית על המניה שצוינה>\n" +
+  "היצמד לעובדות שבכתבה, אל תמציא מספרים. השאר שמות חברות וסימולים באנגלית.";
+
+function decodeEntities(s) {
+  return s.replace(/&nbsp;/g, " ").replace(/&amp;/g, "&").replace(/&quot;/g, '"').replace(/&#39;|&apos;|&#x27;/g, "'")
+    .replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/&#(\d+);/g, (_, n) => String.fromCharCode(+n))
+    .replace(/&#x([0-9a-f]+);/gi, (_, n) => String.fromCharCode(parseInt(n, 16)));
+}
+
+export async function fetchArticle(url) {
+  const r = await fetch(url, {
+    redirect: "follow",
+    headers: { "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130 Safari/537.36", "Accept-Language": "en-US,en;q=0.9" },
+    cf: { cacheTtl: 3600 },
+  });
+  if (!r.ok) return { error: `האתר החזיר ${r.status}` };
+  const html = (await r.text()).slice(0, 800_000)
+    .replace(/<script[\s\S]*?<\/script>/gi, " ").replace(/<style[\s\S]*?<\/style>/gi, " ").replace(/<noscript[\s\S]*?<\/noscript>/gi, " ");
+  const paras = [...html.matchAll(/<p[^>]*>([\s\S]*?)<\/p>/gi)]
+    .map((m) => decodeEntities(m[1].replace(/<[^>]+>/g, " ")).replace(/\s+/g, " ").trim())
+    .filter((p) => p.length > 60 && !/cookie|subscribe|sign up|newsletter|all rights reserved|javascript/i.test(p));
+  const text = paras.join("\n").slice(0, 7000);
+  const title = decodeEntities((html.match(/<title[^>]*>([\s\S]*?)<\/title>/i) || [])[1] || "").replace(/\s+/g, " ").trim();
+  return { text, title, final_url: r.url };
+}
+
+export async function articleSummary(env, keys, { text, title, ticker }) {
+  const prompt = `מניה: ${ticker || "—"}\nכותרת מקורית: ${title}\n\nטקסט הכתבה:\n${text}`;
+  const r = await llmCall(env, keys, { system: SYSTEM_ARTICLE, prompt });
+  return { summary: r.text, provider: r.provider, requests: r.requests, error: r.text ? null : r.error };
+}

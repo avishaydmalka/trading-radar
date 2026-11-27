@@ -57,7 +57,11 @@ def send_alert(a: dict) -> None:
         lines.append(f"ציון: <b>{a['score']:+.0f}</b>")
     buttons = None
     if settings.PUBLIC_URL.startswith("https://"):
-        buttons = [[{"text": "📊 פתח בדשבורד", "url": f"{settings.PUBLIC_URL.rstrip('/')}/?ticker={a.get('ticker') or ''}"}]]
+        base = settings.PUBLIC_URL.rstrip('/')
+        row = [{"text": "📊 פתח בדשבורד", "url": f"{base}/?ticker={a.get('ticker') or ''}"}]
+        if data.get("url") and a.get("id") is not None:  # news: full article translated to Hebrew inside the app
+            row.insert(0, {"text": "📰 הכתבה המלאה בעברית", "url": f"{base}/?alert={a['id']}"})
+        buttons = [row]
     send_text("\n".join(lines), buttons=buttons)
 
 
